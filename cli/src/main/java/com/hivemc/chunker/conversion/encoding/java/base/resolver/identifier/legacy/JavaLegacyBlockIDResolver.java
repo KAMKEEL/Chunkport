@@ -294,6 +294,14 @@ public class JavaLegacyBlockIDResolver implements Resolver<Integer, String> {
             mapping.put("minecraft:concrete", 251);
             mapping.put("minecraft:concrete_powder", 252);
         }
+
+        // If legacy level.dat mappings are loaded, merge them so reverse lookups work
+        if (com.hivemc.chunker.mapping.LevelConvertMappings.isLoaded()) {
+            for (var entry : com.hivemc.chunker.mapping.LevelConvertMappings.getLegacyIds().entrySet()) {
+                mapping.forward().putIfAbsent(entry.getKey(), entry.getValue());
+                mapping.inverse().putIfAbsent(entry.getValue(), entry.getKey());
+            }
+        }
     }
 
     @Override

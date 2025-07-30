@@ -68,6 +68,15 @@ public final class LevelConvertMappings {
     }
 
     /**
+     * Get an unmodifiable view of the identifier to numeric ID mappings.
+     *
+     * @return the loaded legacy ID map.
+     */
+    public static Map<String, Integer> getLegacyIds() {
+        return java.util.Collections.unmodifiableMap(LEGACY_IDS);
+    }
+
+    /**
      * Get the namespaced identifier for a numeric ID.
      *
      * @param id the numeric ID.
