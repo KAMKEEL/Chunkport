@@ -16,6 +16,7 @@ import java.util.Map;
  */
 public final class LevelConvertMappings {
     private static final Map<String, Integer> LEGACY_IDS = new HashMap<>();
+    private static final Map<Integer, String> LEGACY_IDENTIFIERS = new HashMap<>();
 
     private LevelConvertMappings() {
     }
@@ -28,8 +29,13 @@ public final class LevelConvertMappings {
      */
     public static void load(File levelDat) throws IOException {
         LEGACY_IDS.clear();
+        LEGACY_IDENTIFIERS.clear();
         if (levelDat != null) {
-            LEGACY_IDS.putAll(readLegacyIDs(levelDat));
+            Map<String, Integer> loaded = readLegacyIDs(levelDat);
+            LEGACY_IDS.putAll(loaded);
+            for (Map.Entry<String, Integer> e : loaded.entrySet()) {
+                LEGACY_IDENTIFIERS.put(e.getValue(), e.getKey());
+            }
         }
     }
 
@@ -59,6 +65,16 @@ public final class LevelConvertMappings {
      */
     public static boolean isLoaded() {
         return !LEGACY_IDS.isEmpty();
+    }
+
+    /**
+     * Get the namespaced identifier for a numeric ID.
+     *
+     * @param id the numeric ID.
+     * @return the identifier or null if not present.
+     */
+    public static String getLegacyIdentifier(int id) {
+        return LEGACY_IDENTIFIERS.get(id);
     }
 
     private static Map<String, Integer> readLegacyIDs(File levelDat) throws IOException {

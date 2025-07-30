@@ -298,7 +298,11 @@ public class JavaLegacyBlockIDResolver implements Resolver<Integer, String> {
 
     @Override
     public Optional<String> to(Integer input) {
-        return Optional.ofNullable(mapping.inverse().get(input));
+        String result = mapping.inverse().get(input);
+        if (result == null && com.hivemc.chunker.mapping.LevelConvertMappings.isLoaded()) {
+            result = com.hivemc.chunker.mapping.LevelConvertMappings.getLegacyIdentifier(input);
+        }
+        return Optional.ofNullable(result);
     }
 
     @Override
