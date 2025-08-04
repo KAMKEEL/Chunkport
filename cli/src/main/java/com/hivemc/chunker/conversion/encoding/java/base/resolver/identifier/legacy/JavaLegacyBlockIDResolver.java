@@ -193,7 +193,8 @@ public class JavaLegacyBlockIDResolver implements Resolver<Integer, String> {
         mapping.put("minecraft:double_plant", 175);
 
         // 1.8.0
-        if (version.isGreaterThanOrEqual(1, 8, 0)) {
+        if (version.isGreaterThanOrEqual(1, 8, 0) ||
+                com.hivemc.chunker.mapping.LevelConvertMappings.isLoaded()) {
             mapping.put("minecraft:slime", 165);
             mapping.put("minecraft:barrier", 166);
             mapping.put("minecraft:iron_trapdoor", 167);
@@ -224,7 +225,8 @@ public class JavaLegacyBlockIDResolver implements Resolver<Integer, String> {
         }
 
         // 1.9
-        if (version.isGreaterThanOrEqual(1, 9, 0)) {
+        if (version.isGreaterThanOrEqual(1, 9, 0) ||
+                com.hivemc.chunker.mapping.LevelConvertMappings.isLoaded()) {
             mapping.put("minecraft:end_rod", 198);
             mapping.put("minecraft:chorus_plant", 199);
             mapping.put("minecraft:chorus_flower", 200);
@@ -244,7 +246,8 @@ public class JavaLegacyBlockIDResolver implements Resolver<Integer, String> {
         }
 
         // 1.10.0
-        if (version.isGreaterThanOrEqual(1, 10, 0)) {
+        if (version.isGreaterThanOrEqual(1, 10, 0) ||
+                com.hivemc.chunker.mapping.LevelConvertMappings.isLoaded()) {
             mapping.put("minecraft:magma", 213);
             mapping.put("minecraft:nether_wart_block", 214);
             mapping.put("minecraft:red_nether_brick", 215);
@@ -253,7 +256,8 @@ public class JavaLegacyBlockIDResolver implements Resolver<Integer, String> {
         }
 
         // 1.11.0
-        if (version.isGreaterThanOrEqual(1, 11, 0)) {
+        if (version.isGreaterThanOrEqual(1, 11, 0) ||
+                com.hivemc.chunker.mapping.LevelConvertMappings.isLoaded()) {
             mapping.put("minecraft:observer", 218);
             mapping.put("minecraft:white_shulker_box", 219);
             mapping.put("minecraft:orange_shulker_box", 220);
@@ -274,7 +278,8 @@ public class JavaLegacyBlockIDResolver implements Resolver<Integer, String> {
         }
 
         // 1.12.0
-        if (version.isGreaterThanOrEqual(1, 12, 0)) {
+        if (version.isGreaterThanOrEqual(1, 12, 0) ||
+                com.hivemc.chunker.mapping.LevelConvertMappings.isLoaded()) {
             mapping.put("minecraft:white_glazed_terracotta", 235);
             mapping.put("minecraft:orange_glazed_terracotta", 236);
             mapping.put("minecraft:magenta_glazed_terracotta", 237);
@@ -298,7 +303,11 @@ public class JavaLegacyBlockIDResolver implements Resolver<Integer, String> {
 
     @Override
     public Optional<String> to(Integer input) {
-        return Optional.ofNullable(mapping.inverse().get(input));
+        String result = mapping.inverse().get(input);
+        if (result == null && com.hivemc.chunker.mapping.LevelConvertMappings.isLoaded()) {
+            result = com.hivemc.chunker.mapping.LevelConvertMappings.getLegacyIdentifier(input);
+        }
+        return Optional.ofNullable(result);
     }
 
     @Override
