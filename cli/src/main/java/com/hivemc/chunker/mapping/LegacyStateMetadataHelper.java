@@ -1,6 +1,8 @@
 package com.hivemc.chunker.mapping;
 
+import com.hivemc.chunker.conversion.encoding.base.Version;
 import com.hivemc.chunker.conversion.encoding.base.resolver.identifier.state.StateMappingGroup;
+import com.hivemc.chunker.conversion.encoding.base.resolver.identifier.state.VersionedStateMappingGroup;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.type.block.states.BlockState;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.type.block.states.BlockStateValue;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.type.block.states.vanilla.VanillaBlockStates;
@@ -29,15 +31,23 @@ public final class LegacyStateMetadataHelper {
         try {
             // Map legacy group names
             for (Field field : JavaLegacyStateGroups.class.getFields()) {
-                if (Modifier.isStatic(field.getModifiers()) && StateMappingGroup.class.isAssignableFrom(field.getType())) {
+                if (!Modifier.isStatic(field.getModifiers())) continue;
+                Class<?> type = field.getType();
+                if (StateMappingGroup.class.isAssignableFrom(type)) {
                     LEGACY_LOOKUP.put(field.getName(), (StateMappingGroup) field.get(null));
+                } else if (VersionedStateMappingGroup.class.isAssignableFrom(type)) {
+                    LEGACY_LOOKUP.put(field.getName(), ((VersionedStateMappingGroup) field.get(null)).getStateMappingGroup(Version.LATEST));
                 }
             }
 
             // Map modern group names
             for (Field field : JavaStateGroups.class.getFields()) {
-                if (Modifier.isStatic(field.getModifiers()) && StateMappingGroup.class.isAssignableFrom(field.getType())) {
+                if (!Modifier.isStatic(field.getModifiers())) continue;
+                Class<?> type = field.getType();
+                if (StateMappingGroup.class.isAssignableFrom(type)) {
                     JAVA_LOOKUP.put(field.getName(), (StateMappingGroup) field.get(null));
+                } else if (VersionedStateMappingGroup.class.isAssignableFrom(type)) {
+                    JAVA_LOOKUP.put(field.getName(), ((VersionedStateMappingGroup) field.get(null)).getStateMappingGroup(Version.LATEST));
                 }
             }
 
