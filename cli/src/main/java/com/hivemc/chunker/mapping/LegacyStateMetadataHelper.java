@@ -29,7 +29,7 @@ public final class LegacyStateMetadataHelper {
         try {
             // Map legacy group names
             for (Field field : JavaLegacyStateGroups.class.getFields()) {
-                if (Modifier.isStatic(field.getModifiers()) && field.getType() == StateMappingGroup.class) {
+                if (Modifier.isStatic(field.getModifiers()) && StateMappingGroup.class.isAssignableFrom(field.getType())) {
                     LEGACY_LOOKUP.put(field.getName(), (StateMappingGroup) field.get(null));
                 }
             }
