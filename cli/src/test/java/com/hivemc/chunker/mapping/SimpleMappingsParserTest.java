@@ -314,4 +314,44 @@ public class SimpleMappingsParserTest {
             assertEquals(expected, mappingsFile.convertBlock(input).orElse(null));
         }
     }
+
+    @Test
+    public void testWallSignMetadataPreserved() throws Exception {
+        File temp = File.createTempFile("simple", ".txt");
+        temp.deleteOnExit();
+        Files.writeString(temp.toPath(),
+                "minecraft:spruce_wall_sign -> etfuturum:wall_sign_spruce -> FACING_HORIZONTAL_UNUSUAL\n");
+
+        MappingsFile mappingsFile = SimpleMappingsParser.parse(temp.toPath());
+
+        Identifier input = new Identifier("minecraft:spruce_wall_sign", Map.of(
+                "facing", new StateValueString("east")
+        ));
+
+        Identifier expected = new Identifier("etfuturum:wall_sign_spruce", Map.of(
+                "data", new StateValueInt(5)
+        ));
+
+        assertEquals(expected, mappingsFile.convertBlock(input).orElse(null));
+    }
+
+    @Test
+    public void testChainAxisMetadataPreserved() throws Exception {
+        File temp = File.createTempFile("simple", ".txt");
+        temp.deleteOnExit();
+        Files.writeString(temp.toPath(),
+                "minecraft:chain -> etfuturum:chain -> AXIS\n");
+
+        MappingsFile mappingsFile = SimpleMappingsParser.parse(temp.toPath());
+
+        Identifier input = new Identifier("minecraft:chain", Map.of(
+                "axis", new StateValueString("x")
+        ));
+
+        Identifier expected = new Identifier("etfuturum:chain", Map.of(
+                "data", new StateValueInt(4)
+        ));
+
+        assertEquals(expected, mappingsFile.convertBlock(input).orElse(null));
+    }
 }
