@@ -19,6 +19,7 @@ import com.hivemc.chunker.mapping.LevelConvertMappings;
 import com.hivemc.chunker.mapping.parser.SimpleMappingsTemplateGenerator;
 import com.hivemc.chunker.pruning.PruningConfig;
 import com.hivemc.chunker.scheduling.task.TrackedTask;
+import com.hivemc.chunker.schematic.SchematicConverter;
 import com.google.gson.JsonArray;
 import java.io.IOException;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
@@ -56,14 +57,18 @@ public class CLI implements Runnable {
 
     @CommandLine.Option(
             names = {"--inputDirectory", "-i"},
-            required = true,
             description = "Directory to read the world from."
     )
     private File inputDirectory;
 
     @CommandLine.Option(
+            names = {"--inputSchematic", "--input-schem"},
+            description = "Path to a .schematic or .schem file to convert."
+    )
+    private File inputSchematic;
+
+    @CommandLine.Option(
             names = {"--outputFormat", "-f"},
-            required = true,
             description = "The format to convert the world to.",
             converter = EncodingTypeValidator.class
     )
@@ -71,10 +76,15 @@ public class CLI implements Runnable {
 
     @CommandLine.Option(
             names = {"--outputDirectory", "-o"},
-            required = true,
             description = "Directory to write the world to."
     )
     private File outputDirectory;
+
+    @CommandLine.Option(
+            names = {"--outputSchematic", "--output-schem"},
+            description = "Path to write the converted .schematic file to."
+    )
+    private File outputSchematic;
 
     @CommandLine.Option(
             names = {"--blockMappings", "-m"},
@@ -245,6 +255,70 @@ public class CLI implements Runnable {
                     System.err.println("Failed to generate mapping: " + e.getMessage());
                     throw new RuntimeException(e);
                 }
+                return;
+            }
+
+            boolean schematicMode = inputSchematic != null || outputSchematic != null;
+            if (schematicMode) {
+                if (inputSchematic == null || outputSchematic == null) {
+                    System.err.println("--inputSchematic and --outputSchematic must both be provided for schematic conversion.");
+                    return;
+                }
+
+                if (format != null && !format.equalsIgnoreCase("JAVA_1_7_10")) {
+                    System.err.println("Schematic conversion only supports JAVA_1_7_10 outputs.");
+                    return;
+                }
+
+                try {
+                    if (levelConvert != null) {
+                        LevelConvertMappings.load(levelConvert);
+                        if (debug) {
+                            System.out.println("[DEBUG] Loaded " + LevelConvertMappings.size() + " level.dat mappings");
+                        }
+                    }
+
+                    MappingsFile loadedMappings = null;
+                    if (blockMappings != null) {
+                        try {
+                            loadedMappings = MappingsFile.load(blockMappings.getJSONObjectString());
+                        } catch (Exception e) {
+                            System.err.println("Failed to parse block mappings.");
+                            throw new RuntimeException(e);
+                        }
+                    }
+
+                    if (simpleBlockMappings != null) {
+                        try {
+                            MappingsFile mappingsFile = SimpleMappingsParser.parse(simpleBlockMappings.toPath());
+                            if (debug) {
+                                int count = mappingsFile.toJson().getAsJsonObject().getAsJsonArray("identifiers").size();
+                                System.out.println("[DEBUG] Parsed " + count + " simple mappings");
+                            }
+                            simpleMappingsProvided = true;
+                            if (loadedMappings == null) {
+                                loadedMappings = mappingsFile;
+                            } else {
+                                loadedMappings = mergeMappings(loadedMappings, mappingsFile);
+                            }
+                        } catch (Exception e) {
+                            System.err.println("Failed to parse simple block mappings.");
+                            throw new RuntimeException(e);
+                        }
+                    }
+
+                    boolean useLegacySimpleMappings = legacySimpleMappings || simpleMappingsProvided;
+                    SchematicConverter.convert(inputSchematic, outputSchematic, enableNEIDs, loadedMappings, useLegacySimpleMappings);
+                    System.out.println("Converted schematic written to " + outputSchematic.getAbsolutePath());
+                } catch (Exception e) {
+                    System.err.println("Failed to convert schematic: " + e.getMessage());
+                    throw new RuntimeException(e);
+                }
+                return;
+            }
+
+            if (inputDirectory == null || outputDirectory == null || format == null) {
+                System.err.println("--inputDirectory, --outputDirectory and --outputFormat are required when not converting schematics.");
                 return;
             }
 
