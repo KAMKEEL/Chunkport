@@ -4,7 +4,7 @@ package com.hivemc.chunker.schematic;
  * Represents the contents of a schematic file using legacy block IDs and data
  * values compatible with WorldEdit for Minecraft 1.7.10.
  */
-public class SchematicData {
+public final class SchematicData {
     private final short width;
     private final short height;
     private final short length;

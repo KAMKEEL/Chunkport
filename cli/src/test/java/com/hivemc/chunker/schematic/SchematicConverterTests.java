@@ -8,6 +8,8 @@ import com.hivemc.chunker.nbt.tags.collection.CompoundTag;
 import com.hivemc.chunker.nbt.tags.array.ByteArrayTag;
 import com.hivemc.chunker.nbt.tags.primitive.IntTag;
 import com.hivemc.chunker.nbt.tags.primitive.ShortTag;
+import com.hivemc.chunker.nbt.tags.TagWithName;
+import com.hivemc.chunker.nbt.io.Reader;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -95,5 +97,21 @@ class SchematicConverterTests {
 
         SchematicData converted = SchematicConverter.read(output);
         assertEquals(2000, converted.getBlockIds()[0]);
+    }
+
+    @Test
+    void writesSchematicRootName() throws Exception {
+        Path output = Files.createTempFile("named", ".schematic");
+        SchematicData data = new SchematicData((short) 1, (short) 1, (short) 1, new int[]{1}, new int[]{0});
+
+        SchematicConverter.writeClassic(output, data, true);
+
+        try (var inputStream = Files.newInputStream(output);
+             var gzipInputStream = new java.util.zip.GZIPInputStream(inputStream);
+             var dataInputStream = new java.io.DataInputStream(gzipInputStream)) {
+            TagWithName<CompoundTag> decoded = Tag.decodeNamed(Reader.toJavaReader(dataInputStream), CompoundTag.class);
+            assertEquals("Schematic", decoded.name());
+            assertEquals(1, decoded.tag().getShort("Width", (short) -1));
+        }
     }
 }

@@ -5,6 +5,7 @@ import com.hivemc.chunker.mapping.MappingsFile;
 import com.hivemc.chunker.mapping.identifier.Identifier;
 import com.hivemc.chunker.nbt.TagType;
 import com.hivemc.chunker.nbt.io.Reader;
+import com.hivemc.chunker.nbt.io.Writer;
 import com.hivemc.chunker.nbt.tags.Tag;
 import com.hivemc.chunker.nbt.tags.collection.CompoundTag;
 import com.hivemc.chunker.nbt.tags.collection.ListTag;
@@ -14,8 +15,10 @@ import com.hivemc.chunker.nbt.tags.primitive.ShortTag;
 import com.hivemc.chunker.nbt.tags.primitive.StringTag;
 import com.hivemc.chunker.nbt.tags.TagWithName;
 
-import java.io.File;
+import java.io.BufferedOutputStream;
+import java.io.DataOutputStream;
 import java.io.DataInputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -24,6 +27,7 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.OptionalInt;
 import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 
 /**
  * Minimal converter capable of reading Sponge .schem files or classic
@@ -31,6 +35,8 @@ import java.util.zip.GZIPInputStream;
  * format used by WorldEdit GTNH (1.7.10) with support for extended block IDs.
  */
 public final class SchematicConverter {
+    private static final String SCHEMATIC_ROOT_NAME = "Schematic";
+
     private SchematicConverter() {
     }
 
@@ -248,7 +254,17 @@ public final class SchematicConverter {
         }
 
         Files.createDirectories(output.getParent());
-        Tag.writeGZipJavaNBT(output.toFile(), root);
+        writeWithRootName(output, root);
+    }
+
+    private static void writeWithRootName(Path output, CompoundTag root) throws IOException {
+        try (var fileOutputStream = Files.newOutputStream(output);
+             var gzipOutputStream = new GZIPOutputStream(fileOutputStream);
+             var bufferedOutputStream = new BufferedOutputStream(gzipOutputStream);
+             var writerStream = new DataOutputStream(bufferedOutputStream)) {
+            Tag.encodeNamed(Writer.toJavaWriter(writerStream), SCHEMATIC_ROOT_NAME, root);
+            writerStream.flush();
+        }
     }
 
     private record PaletteMapping(int paletteIndex, int blockId, int meta) {
