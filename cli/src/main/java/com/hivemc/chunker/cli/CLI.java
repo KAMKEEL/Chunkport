@@ -17,6 +17,7 @@ import com.hivemc.chunker.mapping.resolver.MappingsFileResolvers;
 import com.hivemc.chunker.mapping.parser.SimpleMappingsParser;
 import com.hivemc.chunker.mapping.LevelConvertMappings;
 import com.hivemc.chunker.mapping.parser.SimpleMappingsTemplateGenerator;
+import com.hivemc.chunker.conversion.schematic.SchematicConverter;
 import com.hivemc.chunker.pruning.PruningConfig;
 import com.hivemc.chunker.scheduling.task.TrackedTask;
 import com.google.gson.JsonArray;
@@ -56,10 +57,15 @@ public class CLI implements Runnable {
 
     @CommandLine.Option(
             names = {"--inputDirectory", "-i"},
-            required = true,
             description = "Directory to read the world from."
     )
     private File inputDirectory;
+
+    @CommandLine.Option(
+            names = {"--inputSchematic", "--input-schem"},
+            description = "Path to a .schem or .schematic file to convert using level.dat mappings."
+    )
+    private File inputSchematic;
 
     @CommandLine.Option(
             names = {"--outputFormat", "-f"},
@@ -71,10 +77,15 @@ public class CLI implements Runnable {
 
     @CommandLine.Option(
             names = {"--outputDirectory", "-o"},
-            required = true,
             description = "Directory to write the world to."
     )
     private File outputDirectory;
+
+    @CommandLine.Option(
+            names = {"--outputSchematic", "--output-schem"},
+            description = "Path to write the converted .schematic file."
+    )
+    private File outputSchematic;
 
     @CommandLine.Option(
             names = {"--blockMappings", "-m"},
@@ -245,6 +256,29 @@ public class CLI implements Runnable {
                     System.err.println("Failed to generate mapping: " + e.getMessage());
                     throw new RuntimeException(e);
                 }
+                return;
+            }
+
+            boolean schematicMode = inputSchematic != null || outputSchematic != null;
+
+            if (schematicMode) {
+                if (inputSchematic == null || outputSchematic == null) {
+                    System.err.println("--inputSchematic and --outputSchematic must both be supplied for schematic conversions.");
+                    return;
+                }
+
+                try {
+                    new SchematicConverter().convert(inputSchematic, outputSchematic);
+                    System.out.println("Schematic conversion complete: " + outputSchematic.getAbsolutePath());
+                    return;
+                } catch (IOException e) {
+                    System.err.println("Failed to convert schematic: " + e.getMessage());
+                    throw new RuntimeException(e);
+                }
+            }
+
+            if (inputDirectory == null || outputDirectory == null) {
+                System.err.println("--inputDirectory and --outputDirectory must both be supplied for world conversions.");
                 return;
             }
 
