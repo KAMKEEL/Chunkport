@@ -63,7 +63,7 @@ public class CLI implements Runnable {
 
     @CommandLine.Option(
             names = {"--inputSchematic", "--input-schem"},
-            description = "Path to a .schematic or .schem file to convert."
+            description = "Directory containing .schematic/.schem files to convert."
     )
     private File inputSchematic;
 
@@ -82,7 +82,7 @@ public class CLI implements Runnable {
 
     @CommandLine.Option(
             names = {"--outputSchematic", "--output-schem"},
-            description = "Path to write the converted .schematic file to."
+            description = "Directory to write converted .schematic files to."
     )
     private File outputSchematic;
 
@@ -265,6 +265,16 @@ public class CLI implements Runnable {
                     return;
                 }
 
+                if (!inputSchematic.isDirectory()) {
+                    System.err.println("--inputSchematic must point to a directory containing schematics.");
+                    return;
+                }
+
+                if (outputSchematic.exists() && !outputSchematic.isDirectory()) {
+                    System.err.println("--outputSchematic must point to a directory for converted schematics.");
+                    return;
+                }
+
                 if (format != null && !format.equalsIgnoreCase("JAVA_1_7_10")) {
                     System.err.println("Schematic conversion only supports JAVA_1_7_10 outputs.");
                     return;
@@ -308,8 +318,8 @@ public class CLI implements Runnable {
                     }
 
                     boolean useLegacySimpleMappings = legacySimpleMappings || simpleMappingsProvided;
-                    SchematicConverter.convert(inputSchematic, outputSchematic, enableNEIDs, loadedMappings, useLegacySimpleMappings);
-                    System.out.println("Converted schematic written to " + outputSchematic.getAbsolutePath());
+                    int convertedCount = SchematicConverter.convertDirectory(inputSchematic.toPath(), outputSchematic.toPath(), enableNEIDs, loadedMappings, useLegacySimpleMappings);
+                    System.out.println("Converted " + convertedCount + " schematics into " + outputSchematic.getAbsolutePath());
                 } catch (Exception e) {
                     System.err.println("Failed to convert schematic: " + e.getMessage());
                     throw new RuntimeException(e);

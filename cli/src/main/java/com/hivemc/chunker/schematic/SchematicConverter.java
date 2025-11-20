@@ -1,5 +1,7 @@
 package com.hivemc.chunker.schematic;
 
+import com.hivemc.chunker.conversion.encoding.base.Version;
+import com.hivemc.chunker.conversion.encoding.java.base.resolver.identifier.legacy.JavaLegacyBlockIDResolver;
 import com.hivemc.chunker.mapping.LevelConvertMappings;
 import com.hivemc.chunker.mapping.MappingsFile;
 import com.hivemc.chunker.mapping.identifier.Identifier;
@@ -23,9 +25,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -36,6 +42,7 @@ import java.util.zip.GZIPOutputStream;
  */
 public final class SchematicConverter {
     private static final String SCHEMATIC_ROOT_NAME = "Schematic";
+    private static final JavaLegacyBlockIDResolver LEGACY_BLOCK_RESOLVER = new JavaLegacyBlockIDResolver(new Version(1, 12, 2));
 
     private SchematicConverter() {
     }
@@ -60,6 +67,50 @@ public final class SchematicConverter {
             data = applyMappings(data, mappingsFile, legacySimpleMappings);
         }
         writeClassic(output.toPath(), data, allowNeids);
+    }
+
+    /**
+     * Convert all schematics found under the input directory into the output
+     * directory, preserving relative paths and writing results with a
+     * <code>.schematic</code> extension.
+     *
+     * @param inputDirectory  root directory to scan for schematics
+     * @param outputDirectory directory to emit converted schematics into
+     * @param allowNeids      whether NEIDs encoding should be emitted when needed
+     * @param mappingsFile    optional mappings file used during conversion
+     * @param legacySimpleMappings whether legacy simple mappings are enabled
+     * @return number of schematics converted
+     * @throws IOException if reading or writing fails
+     */
+    public static int convertDirectory(Path inputDirectory, Path outputDirectory, boolean allowNeids, MappingsFile mappingsFile, boolean legacySimpleMappings) throws IOException {
+        Files.createDirectories(outputDirectory);
+
+        List<Path> schematics;
+        try (Stream<Path> paths = Files.walk(inputDirectory)) {
+            schematics = paths
+                    .filter(Files::isRegularFile)
+                    .filter(SchematicConverter::isSchematicFile)
+                    .collect(Collectors.toCollection(ArrayList::new));
+        }
+
+        int converted = 0;
+        for (Path input : schematics) {
+            Path relative = inputDirectory.relativize(input);
+            String fileName = relative.getFileName().toString();
+            String base = fileName.contains(".") ? fileName.substring(0, fileName.lastIndexOf('.')) : fileName;
+            Path targetRelative = relative.resolveSibling(base + ".schematic");
+            Path output = outputDirectory.resolve(targetRelative);
+            Files.createDirectories(output.getParent());
+            convert(input.toFile(), output.toFile(), allowNeids, mappingsFile, legacySimpleMappings);
+            converted++;
+        }
+
+        return converted;
+    }
+
+    private static boolean isSchematicFile(Path path) {
+        String name = path.getFileName().toString().toLowerCase();
+        return name.endsWith(".schem") || name.endsWith(".schematic");
     }
 
     /**
@@ -156,7 +207,7 @@ public final class SchematicConverter {
     }
 
     private static int resolveLegacyId(String name) {
-        Integer id = LevelConvertMappings.getLegacyId(name);
+        Integer id = resolveLegacyBlockId(name);
         return id != null ? id : 0;
     }
 
@@ -179,18 +230,20 @@ public final class SchematicConverter {
         int[] meta = Arrays.copyOf(data.getBlockData(), data.getBlockData().length);
 
         for (int i = 0; i < ids.length; i++) {
-            String identifier = LevelConvertMappings.getLegacyIdentifier(ids[i]);
+            String identifier = resolveIdentifierFromMappings(ids[i]);
             if (identifier == null) {
                 continue;
             }
 
-            OptionalInt metaValue = legacySimpleMappings ? OptionalInt.of(meta[i]) : OptionalInt.empty();
+            final int index = i;
+            final int currentMeta = meta[i];
+            OptionalInt metaValue = legacySimpleMappings ? OptionalInt.of(currentMeta) : OptionalInt.empty();
             Identifier input = Identifier.fromData(identifier, metaValue);
             mappingsFile.convertBlock(input).ifPresent(converted -> {
-                Integer newId = LevelConvertMappings.getLegacyId(converted.getIdentifier());
+                Integer newId = resolveLegacyBlockId(converted.getIdentifier());
                 if (newId != null) {
-                    ids[i] = newId;
-                    meta[i] = converted.getDataValue().orElse(meta[i]);
+                    ids[index] = newId;
+                    meta[index] = converted.getDataValue().orElse(currentMeta);
                 }
             });
         }
@@ -276,5 +329,21 @@ public final class SchematicConverter {
                 }
             }
         }
+    }
+
+    private static Integer resolveLegacyBlockId(String identifier) {
+        Integer levelId = LevelConvertMappings.getLegacyId(identifier);
+        if (levelId != null) {
+            return levelId;
+        }
+        return LEGACY_BLOCK_RESOLVER.from(identifier).orElse(null);
+    }
+
+    private static String resolveIdentifierFromMappings(int id) {
+        String identifier = LevelConvertMappings.getLegacyIdentifier(id);
+        if (identifier != null) {
+            return identifier;
+        }
+        return LEGACY_BLOCK_RESOLVER.to(id).orElse(null);
     }
 }

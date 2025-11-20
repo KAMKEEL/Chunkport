@@ -100,6 +100,70 @@ class SchematicConverterTests {
     }
 
     @Test
+    void appliesMappingsUsingLevelDatIdentifiers() throws Exception {
+        // Level.dat that supplies IDs for both source and target identifiers
+        CompoundTag level = new CompoundTag();
+        CompoundTag forge = new CompoundTag();
+        CompoundTag itemData = new CompoundTag();
+        itemData.put("minecraft:observer", new IntTag(5000));
+        itemData.put("etfuturum:observer", new IntTag(6000));
+        forge.put("ItemData", itemData);
+        level.put("FML", forge);
+
+        File levelDat = File.createTempFile("level", ".dat");
+        Tag.writeGZipJavaNBT(levelDat, level);
+        LevelConvertMappings.load(levelDat);
+
+        // Schematic that uses the legacy ID from level.dat
+        SchematicData data = new SchematicData((short) 1, (short) 1, (short) 1, new int[]{5000}, new int[]{5});
+        Path input = Files.createTempFile("legacy-level", ".schematic");
+        SchematicConverter.writeClassic(input, data, true);
+
+        // Simple mapping redirects to the alternate identifier backed by level.dat
+        Path mappingFile = Files.createTempFile("observer", ".txt");
+        Files.writeString(mappingFile, "minecraft:observer -> etfuturum:observer\n");
+        MappingsFile mappings = SimpleMappingsParser.parse(mappingFile);
+
+        Path output = Files.createTempFile("converted-level", ".schematic");
+        SchematicConverter.convert(input.toFile(), output.toFile(), true, mappings, true);
+
+        SchematicData converted = SchematicConverter.read(output);
+        assertEquals(6000, converted.getBlockIds()[0]);
+        assertEquals(5, converted.getBlockData()[0]);
+    }
+
+    @Test
+    void convertsDirectoriesOfSchematics() throws Exception {
+        Path inputDir = Files.createTempDirectory("schem-input");
+        Path nested = Files.createDirectories(inputDir.resolve("nested"));
+
+        // Write a Sponge schematic in a nested folder
+        CompoundTag palette = new CompoundTag();
+        palette.put("minecraft:stone", new IntTag(0));
+        CompoundTag spongeRoot = new CompoundTag();
+        spongeRoot.put("Width", new ShortTag((short) 1));
+        spongeRoot.put("Height", new ShortTag((short) 1));
+        spongeRoot.put("Length", new ShortTag((short) 1));
+        spongeRoot.put("Palette", palette);
+        spongeRoot.put("PaletteMax", new IntTag(1));
+        spongeRoot.put("BlockData", new ByteArrayTag(new byte[]{0}));
+        Path spongeFile = nested.resolve("sample.schem");
+        Tag.writeGZipJavaNBT(spongeFile.toFile(), spongeRoot);
+
+        // Write a classic schematic alongside
+        Path classicFile = inputDir.resolve("basic.schematic");
+        SchematicData data = new SchematicData((short) 1, (short) 1, (short) 1, new int[]{1}, new int[]{0});
+        SchematicConverter.writeClassic(classicFile, data, true);
+
+        Path outputDir = Files.createTempDirectory("schem-output");
+        int count = SchematicConverter.convertDirectory(inputDir, outputDir, true, null, false);
+
+        assertEquals(2, count);
+        assertTrue(Files.exists(outputDir.resolve("basic.schematic")));
+        assertTrue(Files.exists(outputDir.resolve("nested/sample.schematic")));
+    }
+
+    @Test
     void writesSchematicRootName() throws Exception {
         Path output = Files.createTempFile("named", ".schematic");
         SchematicData data = new SchematicData((short) 1, (short) 1, (short) 1, new int[]{1}, new int[]{0});
