@@ -16,7 +16,26 @@ import java.util.StringJoiner;
  */
 public class IntArrayTag extends Tag<int[]> {
     public static final int MAX_ARRAY_LENGTH = 65536; // Unsigned Short MAX
+    private static volatile int maxDecodeLength = MAX_ARRAY_LENGTH;
     private int @Nullable [] value;
+
+    /**
+     * Set the maximum array length allowed while decoding. Chunk data never exceeds
+     * MAX_ARRAY_LENGTH, but schematics store entire builds in single arrays and need
+     * a larger limit while they are being read.
+     *
+     * @param length the new maximum decode length.
+     */
+    public static void setMaxDecodeLength(int length) {
+        maxDecodeLength = length;
+    }
+
+    /**
+     * Reset the maximum decode length back to the default MAX_ARRAY_LENGTH.
+     */
+    public static void resetMaxDecodeLength() {
+        maxDecodeLength = MAX_ARRAY_LENGTH;
+    }
 
     /**
      * Create a IntArrayTag with an existing integer array.
@@ -81,7 +100,7 @@ public class IntArrayTag extends Tag<int[]> {
     @Override
     public void decodeValue(Reader reader) throws IOException {
         int length = reader.readInt();
-        if (length < 0 || length > MAX_ARRAY_LENGTH)
+        if (length < 0 || length > maxDecodeLength)
             throw new IllegalArgumentException("Could not read array with length " + length);
 
         // Create the array and read it

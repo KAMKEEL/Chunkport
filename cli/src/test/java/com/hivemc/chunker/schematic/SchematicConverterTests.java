@@ -12,6 +12,7 @@ import com.hivemc.chunker.nbt.tags.TagWithName;
 import com.hivemc.chunker.nbt.io.Reader;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -161,6 +162,126 @@ class SchematicConverterTests {
         assertEquals(2, count);
         assertTrue(Files.exists(outputDir.resolve("basic.schematic")));
         assertTrue(Files.exists(outputDir.resolve("nested/sample.schematic")));
+    }
+
+    @Test
+    void readsSchematicsLargerThanChunkArrayLimit() throws Exception {
+        // 64x32x64 = 131072 blocks, above the 65536 NBT chunk array limit
+        int volume = 64 * 32 * 64;
+        int[] ids = new int[volume];
+        int[] meta = new int[volume];
+        java.util.Arrays.fill(ids, 1);
+
+        Path output = Files.createTempFile("large", ".schematic");
+        SchematicData data = new SchematicData((short) 64, (short) 32, (short) 64, ids, meta);
+        SchematicConverter.writeClassic(output, data, true);
+
+        SchematicData roundTrip = SchematicConverter.read(output);
+        assertEquals(volume, roundTrip.getBlockIds().length);
+        assertEquals(1, roundTrip.getBlockIds()[volume - 1]);
+    }
+
+    @Test
+    void decodesVarintPalettesAbove127Entries() throws Exception {
+        // Palettes above 127 entries use multi-byte varints in BlockData
+        int paletteCount = 130;
+        CompoundTag palette = new CompoundTag();
+        CompoundTag itemData = new CompoundTag();
+        for (int i = 0; i < paletteCount; i++) {
+            palette.put("varinttest:block" + i, new IntTag(i));
+            itemData.put("varinttest:block" + i, new IntTag(1000 + i));
+        }
+
+        CompoundTag forge = new CompoundTag();
+        forge.put("ItemData", itemData);
+        CompoundTag level = new CompoundTag();
+        level.put("FML", forge);
+        File levelDat = File.createTempFile("level", ".dat");
+        Tag.writeGZipJavaNBT(levelDat, level);
+        LevelConvertMappings.load(levelDat);
+
+        // One block per palette entry, varint encoded
+        ByteArrayOutputStream blockData = new ByteArrayOutputStream();
+        for (int i = 0; i < paletteCount; i++) {
+            int value = i;
+            while ((value & ~0x7F) != 0) {
+                blockData.write((value & 0x7F) | 0x80);
+                value >>>= 7;
+            }
+            blockData.write(value);
+        }
+
+        CompoundTag spongeRoot = new CompoundTag();
+        spongeRoot.put("Width", new ShortTag((short) paletteCount));
+        spongeRoot.put("Height", new ShortTag((short) 1));
+        spongeRoot.put("Length", new ShortTag((short) 1));
+        spongeRoot.put("Palette", palette);
+        spongeRoot.put("PaletteMax", new IntTag(paletteCount));
+        spongeRoot.put("BlockData", new ByteArrayTag(blockData.toByteArray()));
+
+        Path input = Files.createTempFile("varint", ".schem");
+        Tag.writeGZipJavaNBT(input.toFile(), spongeRoot);
+
+        SchematicData loaded = SchematicConverter.read(input);
+        assertEquals(1000, loaded.getBlockIds()[0]);
+        assertEquals(1000 + 127, loaded.getBlockIds()[127]);
+        assertEquals(1000 + 128, loaded.getBlockIds()[128]);
+        assertEquals(1000 + 129, loaded.getBlockIds()[129]);
+    }
+
+    @Test
+    void readsSpongeV3NestedFormat() throws Exception {
+        CompoundTag palette = new CompoundTag();
+        palette.put("minecraft:stone", new IntTag(0));
+
+        CompoundTag blocks = new CompoundTag();
+        blocks.put("Palette", palette);
+        blocks.put("Data", new ByteArrayTag(new byte[]{0}));
+
+        CompoundTag schematic = new CompoundTag();
+        schematic.put("Version", new IntTag(3));
+        schematic.put("DataVersion", new IntTag(3700));
+        schematic.put("Width", new ShortTag((short) 1));
+        schematic.put("Height", new ShortTag((short) 1));
+        schematic.put("Length", new ShortTag((short) 1));
+        schematic.put("Blocks", blocks);
+
+        CompoundTag root = new CompoundTag();
+        root.put("Schematic", schematic);
+
+        Path input = Files.createTempFile("spongev3", ".schem");
+        Tag.writeGZipJavaNBT(input.toFile(), root);
+
+        SchematicData loaded = SchematicConverter.read(input);
+        assertEquals(1, loaded.getBlockIds().length);
+        assertEquals(1, loaded.getBlockIds()[0]);
+    }
+
+    @Test
+    void resolvesFlattenedIdentifiersWithBlockStates() throws Exception {
+        // 1.13+ flattened names with properties should keep orientation data
+        CompoundTag palette = new CompoundTag();
+        palette.put("minecraft:oak_stairs[facing=east,half=bottom,shape=straight,waterlogged=false]", new IntTag(0));
+        palette.put("minecraft:oak_stairs[facing=north,half=top,shape=straight,waterlogged=false]", new IntTag(1));
+
+        CompoundTag spongeRoot = new CompoundTag();
+        spongeRoot.put("Version", new IntTag(2));
+        spongeRoot.put("DataVersion", new IntTag(1631)); // 1.13.2
+        spongeRoot.put("Width", new ShortTag((short) 2));
+        spongeRoot.put("Height", new ShortTag((short) 1));
+        spongeRoot.put("Length", new ShortTag((short) 1));
+        spongeRoot.put("Palette", palette);
+        spongeRoot.put("PaletteMax", new IntTag(2));
+        spongeRoot.put("BlockData", new ByteArrayTag(new byte[]{0, 1}));
+
+        Path input = Files.createTempFile("stairs", ".schem");
+        Tag.writeGZipJavaNBT(input.toFile(), spongeRoot);
+
+        SchematicData loaded = SchematicConverter.read(input);
+        assertEquals(53, loaded.getBlockIds()[0]); // oak stairs
+        assertEquals(53, loaded.getBlockIds()[1]);
+        // Orientation must not be lost, the two entries face different ways
+        assertNotEquals(loaded.getBlockData()[0], loaded.getBlockData()[1]);
     }
 
     @Test

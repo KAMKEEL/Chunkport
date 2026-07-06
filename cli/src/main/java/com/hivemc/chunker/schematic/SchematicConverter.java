@@ -1,25 +1,38 @@
 package com.hivemc.chunker.schematic;
 
+import com.hivemc.chunker.conversion.WorldConverter;
 import com.hivemc.chunker.conversion.encoding.base.Version;
+import com.hivemc.chunker.conversion.encoding.java.JavaDataVersion;
+import com.hivemc.chunker.conversion.encoding.java.base.resolver.identifier.JavaBlockIdentifierResolver;
 import com.hivemc.chunker.conversion.encoding.java.base.resolver.identifier.legacy.JavaLegacyBlockIDResolver;
+import com.hivemc.chunker.conversion.encoding.java.base.resolver.identifier.legacy.JavaLegacyBlockIdentifierResolver;
+import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.ChunkerBlockIdentifier;
 import com.hivemc.chunker.mapping.LevelConvertMappings;
 import com.hivemc.chunker.mapping.MappingsFile;
 import com.hivemc.chunker.mapping.identifier.Identifier;
+import com.hivemc.chunker.mapping.identifier.states.StateValue;
+import com.hivemc.chunker.mapping.identifier.states.StateValueString;
+import com.hivemc.chunker.mapping.resolver.MappingsFileResolvers;
 import com.hivemc.chunker.nbt.TagType;
 import com.hivemc.chunker.nbt.io.Reader;
 import com.hivemc.chunker.nbt.io.Writer;
 import com.hivemc.chunker.nbt.tags.Tag;
+import com.hivemc.chunker.nbt.tags.TagWithName;
+import com.hivemc.chunker.nbt.tags.array.ByteArrayTag;
+import com.hivemc.chunker.nbt.tags.array.IntArrayTag;
+import com.hivemc.chunker.nbt.tags.array.LongArrayTag;
 import com.hivemc.chunker.nbt.tags.collection.CompoundTag;
 import com.hivemc.chunker.nbt.tags.collection.ListTag;
-import com.hivemc.chunker.nbt.tags.array.ByteArrayTag;
 import com.hivemc.chunker.nbt.tags.primitive.IntTag;
 import com.hivemc.chunker.nbt.tags.primitive.ShortTag;
 import com.hivemc.chunker.nbt.tags.primitive.StringTag;
-import com.hivemc.chunker.nbt.tags.TagWithName;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
+import org.jetbrains.annotations.Nullable;
 
+import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
-import java.io.DataOutputStream;
 import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -27,22 +40,43 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 /**
- * Minimal converter capable of reading Sponge .schem files or classic
+ * Minimal converter capable of reading Sponge .schem files (v1/v2/v3) or classic
  * WorldEdit .schematic files and writing them back to the classic schematic
  * format used by WorldEdit GTNH (1.7.10) with support for extended block IDs.
  */
 public final class SchematicConverter {
     private static final String SCHEMATIC_ROOT_NAME = "Schematic";
-    private static final JavaLegacyBlockIDResolver LEGACY_BLOCK_RESOLVER = new JavaLegacyBlockIDResolver(new Version(1, 12, 2));
+    /** Version used to interpret numeric block IDs found in classic schematics. */
+    private static final Version LEGACY_INPUT_VERSION = new Version(1, 12, 2);
+    /** Version schematics are written for. */
+    private static final Version TARGET_VERSION = new Version(1, 7, 10);
+    /** Version assumed for Sponge schematics without a DataVersion (WorldEdit 1.13 era). */
+    private static final Version DEFAULT_SPONGE_VERSION = new Version(1, 13, 2);
+    /** First DataVersion using flattened identifiers (1.13). */
+    private static final int FLATTENING_DATA_VERSION = 1519;
+
+    /** Resolves 1.12-era numeric IDs to identifiers for classic schematic inputs. */
+    private static final JavaLegacyBlockIDResolver LEGACY_BLOCK_RESOLVER = new JavaLegacyBlockIDResolver(LEGACY_INPUT_VERSION);
+    /** Resolves identifiers to 1.7.10 numeric IDs for the written schematic. */
+    private static final JavaLegacyBlockIDResolver TARGET_BLOCK_ID_RESOLVER = new JavaLegacyBlockIDResolver(TARGET_VERSION);
+
+    // Schematics store entire builds in single NBT arrays, so the chunk-sized decode
+    // limits need to be raised while reading them.
+    private static final int SCHEMATIC_MAX_BYTE_ARRAY_LENGTH = 1 << 30; // 1GB of bytes
+    private static final int SCHEMATIC_MAX_INT_ARRAY_LENGTH = 1 << 28; // 1GB of ints
+    private static final int SCHEMATIC_MAX_LONG_ARRAY_LENGTH = 1 << 27; // 1GB of longs
 
     private SchematicConverter() {
     }
@@ -61,10 +95,17 @@ public final class SchematicConverter {
         convert(input, output, allowNeids, null, false);
     }
 
-    public static void convert(File input, File output, boolean allowNeids, MappingsFile mappingsFile, boolean legacySimpleMappings) throws IOException {
-        SchematicData data = read(input.toPath());
-        if (mappingsFile != null) {
-            data = applyMappings(data, mappingsFile, legacySimpleMappings);
+    public static void convert(File input, File output, boolean allowNeids, @Nullable MappingsFile mappingsFile, boolean legacySimpleMappings) throws IOException {
+        convert(input, output, allowNeids, new ResolutionContext(mappingsFile, legacySimpleMappings));
+    }
+
+    private static void convert(File input, File output, boolean allowNeids, ResolutionContext context) throws IOException {
+        ReadResult result = readInternal(input.toPath(), context);
+        SchematicData data = result.data();
+        // Sponge inputs already apply mappings while resolving the palette, classic
+        // inputs apply them per block after reading.
+        if (!result.sponge() && context.mappingsFile != null) {
+            data = applyMappings(data, context.mappingsFile, context.legacySimpleMappings);
         }
         writeClassic(output.toPath(), data, allowNeids);
     }
@@ -82,7 +123,7 @@ public final class SchematicConverter {
      * @return number of schematics converted
      * @throws IOException if reading or writing fails
      */
-    public static int convertDirectory(Path inputDirectory, Path outputDirectory, boolean allowNeids, MappingsFile mappingsFile, boolean legacySimpleMappings) throws IOException {
+    public static int convertDirectory(Path inputDirectory, Path outputDirectory, boolean allowNeids, @Nullable MappingsFile mappingsFile, boolean legacySimpleMappings) throws IOException {
         Files.createDirectories(outputDirectory);
 
         List<Path> schematics;
@@ -93,6 +134,9 @@ public final class SchematicConverter {
                     .collect(Collectors.toCollection(ArrayList::new));
         }
 
+        // Share a single resolution context (and its resolvers) across all files
+        ResolutionContext context = new ResolutionContext(mappingsFile, legacySimpleMappings);
+
         int converted = 0;
         for (Path input : schematics) {
             Path relative = inputDirectory.relativize(input);
@@ -101,8 +145,13 @@ public final class SchematicConverter {
             Path targetRelative = relative.resolveSibling(base + ".schematic");
             Path output = outputDirectory.resolve(targetRelative);
             Files.createDirectories(output.getParent());
-            convert(input.toFile(), output.toFile(), allowNeids, mappingsFile, legacySimpleMappings);
-            converted++;
+            try {
+                convert(input.toFile(), output.toFile(), allowNeids, context);
+                converted++;
+                System.out.println("Converted " + relative);
+            } catch (Exception e) {
+                System.err.println("Failed to convert " + relative + ": " + e.getMessage());
+            }
         }
 
         return converted;
@@ -114,18 +163,35 @@ public final class SchematicConverter {
     }
 
     /**
-     * Read a schematic from either Sponge .schem or classic .schematic.
+     * Read a schematic from either Sponge .schem (v1/v2/v3) or classic .schematic.
      */
     public static SchematicData read(Path path) throws IOException {
+        return readInternal(path, new ResolutionContext(null, false)).data();
+    }
+
+    private static ReadResult readInternal(Path path, ResolutionContext context) throws IOException {
         CompoundTag root = readRoot(path);
         if (root == null) {
             throw new IOException("Invalid schematic: no root tag present");
         }
 
-        if (root.contains("Palette") && root.contains("BlockData")) {
-            return readSponge(root);
+        // Sponge v3 nests everything inside a "Schematic" compound
+        Tag<?> nested = root.get("Schematic");
+        if (nested instanceof CompoundTag nestedCompound) {
+            root = nestedCompound;
         }
-        return readClassic(root);
+
+        // Sponge v3 groups block information inside a "Blocks" compound
+        Tag<?> blocksTag = root.get("Blocks");
+        if (blocksTag instanceof CompoundTag blocksCompound && blocksCompound.contains("Palette")) {
+            return new ReadResult(readSponge(path, root, blocksCompound.getCompound("Palette"), blocksCompound.getByteArray("Data"), context), true);
+        }
+
+        // Sponge v1/v2 keeps Palette/BlockData on the root
+        if (root.contains("Palette") && root.contains("BlockData")) {
+            return new ReadResult(readSponge(path, root, root.getCompound("Palette"), root.getByteArray("BlockData"), context), true);
+        }
+        return new ReadResult(readClassic(root), false);
     }
 
     private static SchematicData readClassic(CompoundTag root) throws IOException {
@@ -171,15 +237,25 @@ public final class SchematicConverter {
     }
 
     private static CompoundTag readRoot(Path path) throws IOException {
+        // Raise the NBT array limits while reading, schematics store the whole build
+        // in single arrays which vastly exceed the chunk-sized defaults.
+        ByteArrayTag.setMaxDecodeLength(SCHEMATIC_MAX_BYTE_ARRAY_LENGTH);
+        IntArrayTag.setMaxDecodeLength(SCHEMATIC_MAX_INT_ARRAY_LENGTH);
+        LongArrayTag.setMaxDecodeLength(SCHEMATIC_MAX_LONG_ARRAY_LENGTH);
         try (InputStream input = Files.newInputStream(path);
-             GZIPInputStream gzip = new GZIPInputStream(input);
+             BufferedInputStream buffered = new BufferedInputStream(input);
+             GZIPInputStream gzip = new GZIPInputStream(buffered);
              DataInputStream dataInputStream = new DataInputStream(gzip)) {
             TagWithName<CompoundTag> pair = Tag.decodeNamed(Reader.toJavaReader(dataInputStream), CompoundTag.class);
             return pair.tag();
+        } finally {
+            ByteArrayTag.resetMaxDecodeLength();
+            IntArrayTag.resetMaxDecodeLength();
+            LongArrayTag.resetMaxDecodeLength();
         }
     }
 
-    private static SchematicData readSponge(CompoundTag root) throws IOException {
+    private static SchematicData readSponge(Path path, CompoundTag root, CompoundTag paletteTag, byte[] blockData, ResolutionContext context) throws IOException {
         short width = root.getShort("Width", (short) -1);
         short height = root.getShort("Height", (short) -1);
         short length = root.getShort("Length", (short) -1);
@@ -187,42 +263,203 @@ public final class SchematicConverter {
             throw new IOException("Invalid schematic dimensions");
         }
 
-        CompoundTag paletteTag = root.getCompound("Palette");
-        byte[] blockData = root.getByteArray("BlockData");
-        int[] blockIds = new int[blockData.length];
-        int[] meta = new int[blockData.length];
+        long volumeLong = (long) width * (long) height * (long) length;
+        if (volumeLong > Integer.MAX_VALUE) {
+            throw new IOException("Schematic too large: " + volumeLong + " blocks");
+        }
+        int volume = (int) volumeLong;
 
+        // BlockData is a varint array with one entry per block (YZX order)
+        int[] paletteIndices = decodeVarIntArray(blockData, volume);
+
+        // Determine the Java version the palette identifiers belong to
+        int dataVersion = root.getInt("DataVersion", -1);
+        Version version;
+        if (dataVersion >= FLATTENING_DATA_VERSION) {
+            version = JavaDataVersion.getNearestVersion(dataVersion).getVersion();
+        } else {
+            if (dataVersion >= 0) {
+                System.err.println("[warn] " + path.getFileName() + ": DataVersion " + dataVersion + " is pre-1.13, treating palette as 1.13.2 identifiers");
+            }
+            version = DEFAULT_SPONGE_VERSION;
+        }
+
+        // Resolve every palette entry to a 1.7.10 block ID + data value
+        int paletteSize = 0;
         for (Map.Entry<String, Tag<?>> entry : paletteTag.getValue().entrySet()) {
             if (entry.getValue() instanceof IntTag indexTag) {
-                int index = indexTag.getValue();
-                if (index < 0) continue;
-                String name = entry.getKey();
-                int id = resolveLegacyId(name);
-                PaletteMapping mapping = new PaletteMapping(index, id, resolveMetaFromState(name));
-                mapping.apply(blockIds, meta, blockData);
+                paletteSize = Math.max(paletteSize, indexTag.getValue() + 1);
             }
+        }
+
+        int[] paletteIds = new int[paletteSize];
+        int[] paletteMeta = new int[paletteSize];
+        List<String> unmapped = new ArrayList<>();
+        for (Map.Entry<String, Tag<?>> entry : paletteTag.getValue().entrySet()) {
+            if (!(entry.getValue() instanceof IntTag indexTag)) continue;
+            int index = indexTag.getValue();
+            if (index < 0 || index >= paletteSize) continue;
+
+            BlockResolution resolution = resolvePaletteEntry(entry.getKey(), version, context);
+            if (resolution != null) {
+                paletteIds[index] = resolution.blockId();
+                paletteMeta[index] = resolution.data();
+            } else {
+                paletteIds[index] = 0;
+                paletteMeta[index] = 0;
+                unmapped.add(entry.getKey());
+            }
+        }
+
+        if (!unmapped.isEmpty()) {
+            System.err.println("[warn] " + path.getFileName() + ": " + unmapped.size() + " palette entries could not be mapped (converted to air):");
+            for (String name : unmapped) {
+                System.err.println("[warn]   " + name);
+            }
+        }
+
+        int[] blockIds = new int[volume];
+        int[] meta = new int[volume];
+        for (int i = 0; i < volume; i++) {
+            int paletteIndex = paletteIndices[i];
+            if (paletteIndex < 0 || paletteIndex >= paletteSize) {
+                throw new IOException("BlockData references palette index " + paletteIndex + " outside palette size " + paletteSize);
+            }
+            blockIds[i] = paletteIds[paletteIndex];
+            meta[i] = paletteMeta[paletteIndex];
         }
 
         return new SchematicData(width, height, length, blockIds, meta);
     }
 
-    private static int resolveLegacyId(String name) {
-        Integer id = resolveLegacyBlockId(name);
-        return id != null ? id : 0;
+    /**
+     * Decode a Sponge BlockData varint array into palette indices.
+     *
+     * @param data          the raw varint bytes.
+     * @param expectedCount the expected number of entries (schematic volume).
+     * @return an array of palette indices with one entry per block.
+     * @throws IOException if the varints are malformed or the count mismatches.
+     */
+    private static int[] decodeVarIntArray(byte[] data, int expectedCount) throws IOException {
+        int[] out = new int[expectedCount];
+        int count = 0;
+        int i = 0;
+        while (i < data.length) {
+            int value = 0;
+            int shift = 0;
+            byte b;
+            do {
+                if (i >= data.length) {
+                    throw new IOException("Truncated varint in BlockData");
+                }
+                if (shift > 28) {
+                    throw new IOException("Malformed varint in BlockData (too long)");
+                }
+                b = data[i++];
+                value |= (b & 0x7F) << shift;
+                shift += 7;
+            } while ((b & 0x80) != 0);
+
+            if (count >= expectedCount) {
+                throw new IOException("BlockData contains more entries than the schematic volume " + expectedCount);
+            }
+            out[count++] = value;
+        }
+        if (count != expectedCount) {
+            throw new IOException("BlockData contains " + count + " entries but the schematic volume is " + expectedCount);
+        }
+        return out;
     }
 
-    private static int resolveMetaFromState(String state) {
-        int bracket = state.indexOf('[');
-        if (bracket == -1) return 0;
-        // Simple heuristic: look for ":<meta>" suffix inside the state string (e.g. "minecraft:stone[type=1]")
-        int equals = state.lastIndexOf('=');
-        if (equals == -1) return 0;
-        try {
-            String value = state.substring(equals + 1, state.length() - 1);
-            return Integer.parseInt(value);
-        } catch (Exception ignored) {
-            return 0;
+    /**
+     * Resolve a Sponge palette entry (e.g. "minecraft:oak_stairs[facing=east,half=bottom]")
+     * to a legacy block ID and data value using the full Chunker pipeline:
+     * modern identifier -> Chunker block -> 1.7.10 identifier (+ simple mappings) -> numeric ID.
+     *
+     * @param state   the palette blockstate string.
+     * @param version the Java version of the palette identifiers.
+     * @param context the shared resolution context.
+     * @return the resolved block, or null when nothing could map it.
+     */
+    @Nullable
+    private static BlockResolution resolvePaletteEntry(String state, Version version, ResolutionContext context) {
+        Identifier parsed = parseBlockState(state);
+
+        // 1) Full vanilla pipeline (handles flattened names + block state properties)
+        Optional<ChunkerBlockIdentifier> chunker = context.modernResolver(version).to(parsed);
+        if (chunker.isPresent()) {
+            Optional<Identifier> legacy = context.legacyWriterResolver.from(chunker.get());
+            if (legacy.isPresent()) {
+                Identifier out = legacy.get();
+                // When legacy simple mappings are inactive the resolver won't have applied
+                // the mappings file, apply it here so behaviour matches the classic path.
+                if (context.mappingsFile != null && !context.legacySimpleMappingsActive) {
+                    OptionalInt data = out.getDataValue();
+                    Identifier mappingInput = Identifier.fromData(out.getIdentifier(), data);
+                    Optional<Identifier> mapped = context.mappingsFile.convertBlock(mappingInput);
+                    if (mapped.isPresent()) {
+                        Identifier converted = mapped.get();
+                        Integer id = resolveTargetBlockId(converted.getIdentifier());
+                        if (id != null) {
+                            return new BlockResolution(id, converted.getDataValue().orElse(data.orElse(0)));
+                        }
+                    }
+                }
+
+                Integer id = resolveTargetBlockId(out.getIdentifier());
+                if (id != null) {
+                    return new BlockResolution(id, out.getDataValue().orElse(0));
+                }
+            }
         }
+
+        // 2) Unknown to vanilla (e.g. modded blocks), try the mappings file on the raw identifier
+        if (context.mappingsFile != null) {
+            Optional<Identifier> mapped = context.mappingsFile.convertBlock(new Identifier(parsed.getIdentifier()));
+            if (mapped.isPresent()) {
+                Integer id = resolveTargetBlockId(mapped.get().getIdentifier());
+                if (id != null) {
+                    return new BlockResolution(id, mapped.get().getDataValue().orElse(0));
+                }
+            }
+        }
+
+        // 3) Direct lookup, the identifier may exist in level.dat under the same name
+        Integer direct = resolveTargetBlockId(parsed.getIdentifier());
+        if (direct != null) {
+            return new BlockResolution(direct, 0);
+        }
+        return null;
+    }
+
+    /**
+     * Parse a blockstate string such as "minecraft:oak_stairs[facing=east,half=bottom]"
+     * into an Identifier with string state values.
+     */
+    private static Identifier parseBlockState(String input) {
+        String trimmed = input.trim();
+        int bracket = trimmed.indexOf('[');
+        String name = bracket == -1 ? trimmed : trimmed.substring(0, bracket);
+        if (!name.contains(":")) {
+            name = "minecraft:" + name;
+        }
+        if (bracket == -1) {
+            return new Identifier(name);
+        }
+
+        int end = trimmed.lastIndexOf(']');
+        if (end <= bracket) {
+            return new Identifier(name);
+        }
+
+        Map<String, StateValue<?>> states = new Object2ObjectOpenHashMap<>();
+        String stateString = trimmed.substring(bracket + 1, end);
+        for (String pair : stateString.split(",")) {
+            int equals = pair.indexOf('=');
+            if (equals == -1) continue;
+            states.put(pair.substring(0, equals).trim(), new StateValueString(pair.substring(equals + 1).trim()));
+        }
+        return new Identifier(name, states);
     }
 
     private static SchematicData applyMappings(SchematicData data, MappingsFile mappingsFile, boolean legacySimpleMappings) {
@@ -320,17 +557,6 @@ public final class SchematicConverter {
         }
     }
 
-    private record PaletteMapping(int paletteIndex, int blockId, int meta) {
-        void apply(int[] ids, int[] data, byte[] paletteData) {
-            for (int i = 0; i < paletteData.length; i++) {
-                if ((paletteData[i] & 0xFF) == paletteIndex) {
-                    ids[i] = blockId;
-                    data[i] = meta;
-                }
-            }
-        }
-    }
-
     private static Integer resolveLegacyBlockId(String identifier) {
         Integer levelId = LevelConvertMappings.getLegacyId(identifier);
         if (levelId != null) {
@@ -339,11 +565,62 @@ public final class SchematicConverter {
         return LEGACY_BLOCK_RESOLVER.from(identifier).orElse(null);
     }
 
+    /**
+     * Resolve an identifier to a numeric block ID for the written 1.7.10 schematic,
+     * preferring level.dat mappings and falling back to vanilla 1.7.10 IDs.
+     */
+    private static Integer resolveTargetBlockId(String identifier) {
+        Integer levelId = LevelConvertMappings.getLegacyId(identifier);
+        if (levelId != null) {
+            return levelId;
+        }
+        return TARGET_BLOCK_ID_RESOLVER.from(identifier).orElse(null);
+    }
+
     private static String resolveIdentifierFromMappings(int id) {
         String identifier = LevelConvertMappings.getLegacyIdentifier(id);
         if (identifier != null) {
             return identifier;
         }
         return LEGACY_BLOCK_RESOLVER.to(id).orElse(null);
+    }
+
+    /** Result of reading a schematic, tracking whether it was a Sponge input. */
+    private record ReadResult(SchematicData data, boolean sponge) {
+    }
+
+    /** A palette entry resolved to a legacy block ID and data value. */
+    private record BlockResolution(int blockId, int data) {
+    }
+
+    /**
+     * Shared state for a conversion run: the mappings file and the resolvers used
+     * to translate identifiers between versions.
+     */
+    private static final class ResolutionContext {
+        @Nullable
+        final MappingsFile mappingsFile;
+        final boolean legacySimpleMappings;
+        final boolean legacySimpleMappingsActive;
+        final WorldConverter converter;
+        final JavaLegacyBlockIdentifierResolver legacyWriterResolver;
+        final Map<Version, JavaBlockIdentifierResolver> modernResolvers = new HashMap<>();
+
+        ResolutionContext(@Nullable MappingsFile mappingsFile, boolean legacySimpleMappings) {
+            this.mappingsFile = mappingsFile;
+            this.legacySimpleMappings = legacySimpleMappings;
+            this.legacySimpleMappingsActive = legacySimpleMappings && mappingsFile != null;
+
+            converter = new WorldConverter(UUID.randomUUID());
+            if (mappingsFile != null) {
+                converter.setBlockMappings(new MappingsFileResolvers(mappingsFile));
+            }
+            converter.setLegacySimpleMappings(legacySimpleMappingsActive);
+            legacyWriterResolver = new JavaLegacyBlockIdentifierResolver(converter, TARGET_VERSION, false, false);
+        }
+
+        JavaBlockIdentifierResolver modernResolver(Version version) {
+            return modernResolvers.computeIfAbsent(version, v -> new JavaBlockIdentifierResolver(converter, v, true, false));
+        }
     }
 }
