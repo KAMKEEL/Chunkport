@@ -511,6 +511,125 @@ class SchematicConversionMatrixTests {
         }
     }
 
+    // ================= complex multi-part and stateful blocks =================
+
+    @Nested
+    class ComplexBlocks {
+        @Test
+        void doorHalvesAndFacing() throws Exception {
+            // Legacy door (64), lower: bits 0-1 facing (0=east,1=south,2=west,3=north), +4 open
+            assertBlock(64, 0, DV_1_13_2, "minecraft:oak_door[half=lower,facing=east,hinge=left,open=false,powered=false]");
+            assertBlock(64, 1, DV_1_13_2, "minecraft:oak_door[half=lower,facing=south,hinge=left,open=false,powered=false]");
+            assertBlock(64, 3, DV_1_13_2, "minecraft:oak_door[half=lower,facing=north,hinge=left,open=false,powered=false]");
+            assertBlock(64, 4, DV_1_13_2, "minecraft:oak_door[half=lower,facing=east,hinge=left,open=true,powered=false]");
+        }
+
+        @Test
+        void doorUpperHalfHinges() throws Exception {
+            // Upper half: bit 8 set, bit 0 = hinge right
+            assertBlock(64, 8, DV_1_13_2, "minecraft:oak_door[half=upper,facing=east,hinge=left,open=false,powered=false]");
+            assertBlock(64, 9, DV_1_13_2, "minecraft:oak_door[half=upper,facing=east,hinge=right,open=false,powered=false]");
+        }
+
+        @Test
+        void bedPartsAndColors() throws Exception {
+            // Legacy bed (26): facing 0=south,1=west,2=north,3=east; +8 head part
+            assertBlock(26, 0, DV_1_13_2, "minecraft:red_bed[part=foot,facing=south,occupied=false]");
+            assertBlock(26, 8, DV_1_13_2, "minecraft:red_bed[part=head,facing=south,occupied=false]");
+            assertBlock(26, 3, DV_1_13_2, "minecraft:red_bed[part=foot,facing=east,occupied=false]");
+            assertBlock(26, 10, DV_1_13_2, "minecraft:red_bed[part=head,facing=north,occupied=false]");
+            // 1.13 colored beds fold back to the single legacy bed block
+            assertBlock(26, 0, DV_1_13_2, "minecraft:blue_bed[part=foot,facing=south,occupied=false]");
+        }
+
+        @Test
+        void doublePlantHalves() throws Exception {
+            // Legacy double plant (175): lower = species, upper = bit 8
+            assertBlock(175, 0, DV_1_13_2, "minecraft:sunflower[half=lower]");
+            assertBlock(175, 1, DV_1_13_2, "minecraft:lilac[half=lower]");
+            assertBlock(175, 3, DV_1_13_2, "minecraft:large_fern[half=lower]");
+            assertBlock(175, 4, DV_1_13_2, "minecraft:rose_bush[half=lower]");
+            assertBlock(175, 5, DV_1_13_2, "minecraft:peony[half=lower]");
+
+            int[] upper = single(DV_1_13_2, "minecraft:sunflower[half=upper]");
+            assertEquals(175, upper[0]);
+            assertEquals(8, upper[1] & 8, "upper half must set bit 8");
+        }
+
+        @Test
+        void repeaterDelayAndFacing() throws Exception {
+            // Legacy repeater (93 unpowered / 94 powered): bits 0-1 facing
+            // (0=south,1=west,2=north,3=east), bits 2-3 = delay-1
+            assertBlock(93, 0, DV_1_13_2, "minecraft:repeater[delay=1,facing=south,locked=false,powered=false]");
+            assertBlock(93, 15, DV_1_13_2, "minecraft:repeater[delay=4,facing=east,locked=false,powered=false]");
+            assertBlock(94, 0, DV_1_13_2, "minecraft:repeater[delay=1,facing=south,locked=false,powered=true]");
+        }
+
+        @Test
+        void comparatorModeAndFacing() throws Exception {
+            // Legacy comparator (149): bits 0-1 facing, +4 subtract mode
+            assertBlock(149, 0, DV_1_13_2, "minecraft:comparator[facing=south,mode=compare,powered=false]");
+            assertBlock(149, 4, DV_1_13_2, "minecraft:comparator[facing=south,mode=subtract,powered=false]");
+            assertBlock(149, 3, DV_1_13_2, "minecraft:comparator[facing=east,mode=compare,powered=false]");
+        }
+
+        @Test
+        void pistonsAndHeads() throws Exception {
+            // Legacy piston facing: 0=down,1=up,2=north,3=south,4=west,5=east; +8 extended
+            assertBlock(33, 5, DV_1_13_2, "minecraft:piston[facing=east,extended=false]");
+            assertBlock(29, 9, DV_1_13_2, "minecraft:sticky_piston[facing=up,extended=true]");
+            assertBlock(34, 9, DV_1_13_2, "minecraft:piston_head[facing=up,type=sticky,short=false]");
+        }
+
+        @Test
+        void railsAscendingAndCurved() throws Exception {
+            // Legacy rail (66): 2-5 ascending E/W/N/S, 6-9 curves SE/SW/NW/NE
+            assertBlock(66, 2, DV_1_13_2, "minecraft:rail[shape=ascending_east]");
+            assertBlock(66, 5, DV_1_13_2, "minecraft:rail[shape=ascending_south]");
+            assertBlock(66, 6, DV_1_13_2, "minecraft:rail[shape=south_east]");
+            assertBlock(66, 9, DV_1_13_2, "minecraft:rail[shape=north_east]");
+            // Powered rail (27): +8 when powered
+            assertBlock(27, 0, DV_1_13_2, "minecraft:powered_rail[shape=north_south,powered=false]");
+            assertBlock(27, 8, DV_1_13_2, "minecraft:powered_rail[shape=north_south,powered=true]");
+        }
+
+        @Test
+        void vineFaceBitmask() throws Exception {
+            // Legacy vine (106): south=1, west=2, north=4, east=8
+            assertBlock(106, 1, DV_1_13_2, "minecraft:vine[south=true,west=false,north=false,east=false,up=false]");
+            assertBlock(106, 12, DV_1_13_2, "minecraft:vine[south=false,west=false,north=true,east=true,up=false]");
+        }
+
+        @Test
+        void cocoaAgeAndFacing() throws Exception {
+            // Legacy cocoa (127): bits 0-1 facing (0=south), bits 2-3 age
+            assertBlock(127, 0, DV_1_13_2, "minecraft:cocoa[age=0,facing=south]");
+            assertBlock(127, 8, DV_1_13_2, "minecraft:cocoa[age=2,facing=south]");
+        }
+
+        @Test
+        void trapdoorFacingHalfOpen() throws Exception {
+            // Legacy trapdoor (96): 0=north,1=south,2=west,3=east; +4 open, +8 top
+            assertBlock(96, 0, DV_1_13_2, "minecraft:oak_trapdoor[facing=north,half=bottom,open=false,powered=false,waterlogged=false]");
+            assertBlock(96, 15, DV_1_13_2, "minecraft:oak_trapdoor[facing=east,half=top,open=true,powered=false,waterlogged=false]");
+        }
+
+        @Test
+        void leversAndButtons() throws Exception {
+            // Legacy lever (69): 1=east wall, 5=floor north/south; button (77): 1=east wall, 5=floor
+            assertBlock(69, 1, DV_1_13_2, "minecraft:lever[face=wall,facing=east,powered=false]");
+            assertBlock(69, 5, DV_1_13_2, "minecraft:lever[face=floor,facing=north,powered=false]");
+            assertBlock(77, 1, DV_1_13_2, "minecraft:stone_button[face=wall,facing=east,powered=false]");
+        }
+
+        @Test
+        void litFurnaceSwitchesId() throws Exception {
+            // Lit state switches the block ID entirely (61 -> 62), facing preserved
+            assertBlock(61, 2, DV_1_13_2, "minecraft:furnace[facing=north,lit=false]");
+            assertBlock(62, 2, DV_1_13_2, "minecraft:furnace[facing=north,lit=true]");
+        }
+    }
+
     // ================= mapping rule formats: full cross product =================
 
     /**

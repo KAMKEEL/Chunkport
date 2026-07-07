@@ -285,6 +285,48 @@ class SchematicConverterTests {
     }
 
     @Test
+    void preservesWorldEditOffsetFromClassicInput() throws Exception {
+        // WEOffset/WEOrigin carry the paste anchor and must survive conversion
+        SchematicData data = new SchematicData((short) 1, (short) 1, (short) 1,
+                new int[]{1}, new int[]{0}, new int[]{-3, 0, 7}, new int[]{100, 64, -200});
+        Path input = Files.createTempFile("offset", ".schematic");
+        SchematicConverter.writeClassic(input, data, true);
+
+        Path output = Files.createTempFile("offset-out", ".schematic");
+        SchematicConverter.convert(input.toFile(), output.toFile(), true);
+
+        SchematicData result = SchematicConverter.read(output);
+        assertArrayEquals(new int[]{-3, 0, 7}, result.getOffset());
+        assertArrayEquals(new int[]{100, 64, -200}, result.getOrigin());
+    }
+
+    @Test
+    void preservesSpongeOffsetAsWorldEditOffset() throws Exception {
+        // Sponge "Offset" int[3] becomes WEOffsetX/Y/Z in the classic output
+        CompoundTag palette = new CompoundTag();
+        palette.put("minecraft:stone", new IntTag(0));
+
+        CompoundTag spongeRoot = new CompoundTag();
+        spongeRoot.put("Width", new ShortTag((short) 1));
+        spongeRoot.put("Height", new ShortTag((short) 1));
+        spongeRoot.put("Length", new ShortTag((short) 1));
+        spongeRoot.put("Palette", palette);
+        spongeRoot.put("PaletteMax", new IntTag(1));
+        spongeRoot.put("BlockData", new ByteArrayTag(new byte[]{0}));
+        spongeRoot.put("Offset", new com.hivemc.chunker.nbt.tags.array.IntArrayTag(new int[]{-5, -1, 12}));
+
+        Path input = Files.createTempFile("sponge-offset", ".schem");
+        Tag.writeGZipJavaNBT(input.toFile(), spongeRoot);
+
+        Path output = Files.createTempFile("sponge-offset-out", ".schematic");
+        SchematicConverter.convert(input.toFile(), output.toFile(), true);
+
+        SchematicData result = SchematicConverter.read(output);
+        assertArrayEquals(new int[]{-5, -1, 12}, result.getOffset());
+        assertNull(result.getOrigin());
+    }
+
+    @Test
     void rejectsClassicSchematicWithTruncatedArrays() throws Exception {
         // Blocks/Data shorter than Width*Height*Length must fail at read time
         CompoundTag root = new CompoundTag();

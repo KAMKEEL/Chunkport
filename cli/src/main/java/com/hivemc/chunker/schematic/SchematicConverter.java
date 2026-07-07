@@ -245,7 +245,18 @@ public final class SchematicConverter {
             meta[index] = data;
         }
 
-        return new SchematicData(width, height, length, blockIds, meta);
+        // Preserve the WorldEdit paste anchor when present
+        int[] offset = readVector(root, "WEOffsetX", "WEOffsetY", "WEOffsetZ");
+        int[] origin = readVector(root, "WEOriginX", "WEOriginY", "WEOriginZ");
+        return new SchematicData(width, height, length, blockIds, meta, offset, origin);
+    }
+
+    /** Read three int tags as an [x, y, z] vector, or null when any is missing. */
+    private static int @Nullable [] readVector(CompoundTag root, String x, String y, String z) {
+        if (!root.contains(x) || !root.contains(y) || !root.contains(z)) {
+            return null;
+        }
+        return new int[]{root.getInt(x), root.getInt(y), root.getInt(z)};
     }
 
     private static CompoundTag readRoot(Path path) throws IOException {
@@ -341,7 +352,23 @@ public final class SchematicConverter {
             meta[i] = paletteMeta[paletteIndex];
         }
 
-        return new SchematicData(width, height, length, blockIds, meta);
+        return new SchematicData(width, height, length, blockIds, meta, readSpongeOffset(root), null);
+    }
+
+    /**
+     * Read the Sponge paste offset: the "Offset" int array (v2/v3), falling back
+     * to the WEOffsetX/Y/Z ints some writers place in Metadata.
+     */
+    private static int @Nullable [] readSpongeOffset(CompoundTag root) {
+        Tag<?> offsetTag = root.get("Offset");
+        if (offsetTag instanceof IntArrayTag intArray && intArray.getValue() != null && intArray.getValue().length == 3) {
+            return intArray.getValue().clone();
+        }
+        CompoundTag metadata = root.getCompound("Metadata", null);
+        if (metadata != null) {
+            return readVector(metadata, "WEOffsetX", "WEOffsetY", "WEOffsetZ");
+        }
+        return null;
     }
 
     /**
@@ -774,7 +801,7 @@ public final class SchematicConverter {
             });
         }
 
-        return new SchematicData(data.getWidth(), data.getHeight(), data.getLength(), ids, meta);
+        return data.withBlocks(ids, meta);
     }
 
     /**
@@ -838,6 +865,18 @@ public final class SchematicConverter {
 
         if (addData != null) {
             root.put("AddData", new ByteArrayTag(addData));
+        }
+
+        // Preserve the WorldEdit paste anchor so //paste positions match the source
+        if (schematic.getOffset() != null) {
+            root.put("WEOffsetX", new IntTag(schematic.getOffset()[0]));
+            root.put("WEOffsetY", new IntTag(schematic.getOffset()[1]));
+            root.put("WEOffsetZ", new IntTag(schematic.getOffset()[2]));
+        }
+        if (schematic.getOrigin() != null) {
+            root.put("WEOriginX", new IntTag(schematic.getOrigin()[0]));
+            root.put("WEOriginY", new IntTag(schematic.getOrigin()[1]));
+            root.put("WEOriginZ", new IntTag(schematic.getOrigin()[2]));
         }
 
         if (truncatedIds > 0) {
