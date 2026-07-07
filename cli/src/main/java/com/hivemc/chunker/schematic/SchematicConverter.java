@@ -607,7 +607,7 @@ public final class SchematicConverter {
                         Identifier converted = mapped.get();
                         Integer id = resolveConvertedBlockId(converted, TARGET_BLOCK_ID_RESOLVER);
                         if (id != null) {
-                            return new BlockResolution(id, converted.getDataValue().orElse(data.orElse(0)));
+                            return new BlockResolution(id, resolveMappedMeta(context.mappingsFile, mappingInput, converted, data.orElse(0)));
                         }
                     }
                 }
@@ -656,7 +656,35 @@ public final class SchematicConverter {
         if (id == null) {
             return resolution;
         }
-        return new BlockResolution(id, mapped.get().getDataValue().orElse(resolution.data()));
+        return new BlockResolution(id, resolveMappedMeta(context.mappingsFile, numericInput, mapped.get(), resolution.data()));
+    }
+
+    /**
+     * Determine the output meta for a mapped block. Named state lists in the simple
+     * mapping format (e.g. "-> SLAB_HALF") are parsed as empty lists which zero the
+     * data value; the world resolvers restore the input states afterwards, so a
+     * constant-zero output with a non-zero input keeps the input meta. Explicit
+     * outputs (e.g. "[data=5]" or data-constrained rules) are honoured as written.
+     */
+    private static int resolveMappedMeta(MappingsFile mappingsFile, Identifier lookup, Identifier converted, int currentMeta) {
+        OptionalInt dataOut = converted.getDataValue();
+        if (dataOut.isEmpty()) {
+            return currentMeta;
+        }
+        int value = dataOut.getAsInt();
+        if (value == 0 && currentMeta != 0) {
+            // Probe with a different data value, if the rule still matches and still
+            // outputs zero, a state list consumed the data and the input meta wins
+            int probe = currentMeta == 15 ? 14 : 15;
+            Optional<Identifier> probed = mappingsFile.convertBlock(Identifier.fromData(lookup.getIdentifier(), OptionalInt.of(probe)));
+            if (probed.isPresent() && probed.get().getIdentifier().equals(converted.getIdentifier())) {
+                OptionalInt probedData = probed.get().getDataValue();
+                if (probedData.isPresent() && probedData.getAsInt() == 0) {
+                    return currentMeta;
+                }
+            }
+        }
+        return value;
     }
 
     /**
@@ -700,21 +728,25 @@ public final class SchematicConverter {
 
             // Try a rule keyed by the block identifier first (e.g. minecraft:mob_spawner)
             String identifier = resolveIdentifierFromMappings(ids[i]);
+            Identifier lookup = null;
             Optional<Identifier> mapped = Optional.empty();
             if (identifier != null) {
-                mapped = mappingsFile.convertBlock(Identifier.fromData(identifier, metaValue));
+                lookup = Identifier.fromData(identifier, metaValue);
+                mapped = mappingsFile.convertBlock(lookup);
             }
 
             // Fall back to numeric ID rules (e.g. "52 -> minecraft:air" or "112:3 -> ...")
             if (mapped.isEmpty()) {
-                mapped = mappingsFile.convertBlock(Identifier.fromData(String.valueOf(ids[i]), metaValue));
+                lookup = Identifier.fromData(String.valueOf(ids[i]), metaValue);
+                mapped = mappingsFile.convertBlock(lookup);
             }
 
+            final Identifier lookupUsed = lookup;
             mapped.ifPresent(converted -> {
                 Integer newId = resolveConvertedBlockId(converted, LEGACY_BLOCK_RESOLVER);
                 if (newId != null) {
                     ids[index] = newId;
-                    meta[index] = converted.getDataValue().orElse(currentMeta);
+                    meta[index] = resolveMappedMeta(mappingsFile, lookupUsed, converted, currentMeta);
                 }
             });
         }
@@ -800,18 +832,17 @@ public final class SchematicConverter {
     }
 
     /**
-     * Resolve a mapping output to a numeric block ID. Outputs prefixed with '='
-     * in the mapping file carry the meta:no_level_convert marker and must skip
-     * the level.dat lookup, resolving against the vanilla table (or as a raw
-     * numeric ID) instead.
+     * Resolve a mapping output to a numeric block ID. The meta:no_level_convert
+     * marker produced by '=' prefixed rules is resolver metadata; the world path
+     * strips it before converting the output through level.dat, so the schematic
+     * path must resolve through level.dat as well (verified against
+     * JavaLegacyBlockIdentifierResolver end-to-end behaviour).
      */
     private static Integer resolveConvertedBlockId(Identifier converted, JavaLegacyBlockIDResolver idResolver) {
         String identifier = converted.getIdentifier();
-        if (!converted.getStates().containsKey("meta:no_level_convert")) {
-            Integer levelId = LevelConvertMappings.getLegacyId(identifier);
-            if (levelId != null) {
-                return levelId;
-            }
+        Integer levelId = LevelConvertMappings.getLegacyId(identifier);
+        if (levelId != null) {
+            return levelId;
         }
         return idResolver.from(identifier).orElse(null);
     }

@@ -611,16 +611,37 @@ class SchematicConversionMatrixTests {
         }
 
         @Test
-        void classicNoLevelConvertPrefix() throws Exception {
-            // = prefix must skip the level.dat lookup and use the vanilla ID table
-            loadLevelDat(Map.of("minecraft:diamond_block", 9999));
-            assertConverted(classic(41, 0), "minecraft:gold_block -> =minecraft:diamond_block\n", 57, 0);
+        void classicEqualsPrefixMatchesWorldPath() throws Exception {
+            // Regression test for the real mapping.txt line
+            // "=minecraft:stone_slab -> uptodate:slab_stone": the world resolvers
+            // strip the '=' marker and still resolve the output through level.dat,
+            // so a classic stone slab (44) must remap to the uptodate NEID.
+            loadLevelDat(Map.of("minecraft:stone_slab", 44, "uptodate:slab_stone", 15199));
+            assertConverted(classic(44, 0), "=minecraft:stone_slab -> uptodate:slab_stone\n", 15199, 0);
         }
 
         @Test
-        void classicLevelDatAppliesWithoutPrefix() throws Exception {
-            // sanity for the test above: without '=' the level.dat ID wins
+        void classicStateListRulePreservesSlabHalves() throws Exception {
+            // The real mapping.txt uses "-> SLAB_HALF" state list rules. The parser
+            // declares those lists empty which zeroes the data, but the world path
+            // restores input states, so top slabs (meta 8) must keep their half.
+            loadLevelDat(Map.of("uptodate:slab_stone", 15199));
+            String rule = "=minecraft:stone_slab -> uptodate:slab_stone -> SLAB_HALF\n";
+            Path input = Files.createTempFile("slabhalf", ".schematic");
+            SchematicConverter.writeClassic(input, new SchematicData((short) 2, (short) 1, (short) 1, new int[]{44, 44}, new int[]{0, 8}), true);
+
+            SchematicData result = convertAndRead(input, mappings(rule), true);
+            assertEquals(15199, result.getBlockIds()[0]);
+            assertEquals(0, result.getBlockData()[0], "bottom slab keeps meta 0");
+            assertEquals(15199, result.getBlockIds()[1]);
+            assertEquals(8, result.getBlockData()[1], "top slab keeps meta 8");
+        }
+
+        @Test
+        void classicEqualsPrefixOutputResolvesThroughLevelDat() throws Exception {
+            // '=' outputs behave like normal outputs for numeric resolution
             loadLevelDat(Map.of("minecraft:diamond_block", 9999));
+            assertConverted(classic(41, 0), "minecraft:gold_block -> =minecraft:diamond_block\n", 9999, 0);
             assertConverted(classic(41, 0), "minecraft:gold_block -> minecraft:diamond_block\n", 9999, 0);
         }
 
