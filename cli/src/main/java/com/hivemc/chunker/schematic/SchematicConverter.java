@@ -52,9 +52,10 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 /**
- * Minimal converter capable of reading Sponge .schem files (v1/v2/v3) or classic
- * WorldEdit .schematic files and writing them back to the classic schematic
- * format used by WorldEdit GTNH (1.7.10) with support for extended block IDs.
+ * Minimal converter capable of reading Sponge .schem files (v1/v2/v3), Litematica
+ * .litematic files or classic WorldEdit .schematic files and writing them back to
+ * the classic schematic format used by WorldEdit GTNH (1.7.10) with support for
+ * extended block IDs.
  */
 public final class SchematicConverter {
     private static final String SCHEMATIC_ROOT_NAME = "Schematic";
@@ -102,9 +103,9 @@ public final class SchematicConverter {
     private static void convert(File input, File output, boolean allowNeids, ResolutionContext context) throws IOException {
         ReadResult result = readInternal(input.toPath(), context);
         SchematicData data = result.data();
-        // Sponge inputs already apply mappings while resolving the palette, classic
-        // inputs apply them per block after reading.
-        if (!result.sponge() && context.mappingsFile != null) {
+        // Palette based inputs (Sponge/Litematica) already apply mappings while
+        // resolving the palette, classic inputs apply them per block after reading.
+        if (!result.paletteResolved() && context.mappingsFile != null) {
             data = applyMappings(data, context.mappingsFile, context.legacySimpleMappings);
         }
         writeClassic(output.toPath(), data, allowNeids);
@@ -159,11 +160,12 @@ public final class SchematicConverter {
 
     private static boolean isSchematicFile(Path path) {
         String name = path.getFileName().toString().toLowerCase();
-        return name.endsWith(".schem") || name.endsWith(".schematic");
+        return name.endsWith(".schem") || name.endsWith(".schematic") || name.endsWith(".litematic");
     }
 
     /**
-     * Read a schematic from either Sponge .schem (v1/v2/v3) or classic .schematic.
+     * Read a schematic from Sponge .schem (v1/v2/v3), Litematica .litematic or
+     * classic .schematic.
      */
     public static SchematicData read(Path path) throws IOException {
         return readInternal(path, new ResolutionContext(null, false)).data();
@@ -179,6 +181,12 @@ public final class SchematicConverter {
         Tag<?> nested = root.get("Schematic");
         if (nested instanceof CompoundTag nestedCompound) {
             root = nestedCompound;
+        }
+
+        // Litematica stores named sub-regions inside a "Regions" compound
+        Tag<?> regionsTag = root.get("Regions");
+        if (regionsTag instanceof CompoundTag regionsCompound) {
+            return new ReadResult(readLitematic(path, root, regionsCompound, context), true);
         }
 
         // Sponge v3 groups block information inside a "Blocks" compound
@@ -333,6 +341,198 @@ public final class SchematicConverter {
     }
 
     /**
+     * Read a Litematica .litematic file. Every named region is resolved through the
+     * same palette pipeline as Sponge schematics and composed into a single schematic
+     * covering the enclosing bounding box of all regions.
+     */
+    private static SchematicData readLitematic(Path path, CompoundTag root, CompoundTag regionsTag, ResolutionContext context) throws IOException {
+        // Determine the Java version the palette identifiers belong to
+        int dataVersion = root.getInt("MinecraftDataVersion", -1);
+        Version version;
+        if (dataVersion >= FLATTENING_DATA_VERSION) {
+            version = JavaDataVersion.getNearestVersion(dataVersion).getVersion();
+        } else {
+            if (dataVersion >= 0) {
+                System.err.println("[warn] " + path.getFileName() + ": MinecraftDataVersion " + dataVersion + " is pre-1.13, treating palettes as 1.13.2 identifiers");
+            }
+            version = DEFAULT_SPONGE_VERSION;
+        }
+
+        // Collect the regions and compute the enclosing bounding box
+        List<LitematicRegion> regions = new ArrayList<>();
+        for (Map.Entry<String, Tag<?>> entry : regionsTag.getValue().entrySet()) {
+            if (!(entry.getValue() instanceof CompoundTag region)) continue;
+            CompoundTag position = region.getCompound("Position");
+            CompoundTag size = region.getCompound("Size");
+            if (position == null || size == null || !region.contains("BlockStatePalette") || !region.contains("BlockStates")) {
+                throw new IOException("Unsupported litematic region '" + entry.getKey() + "' (version " + root.getInt("Version", -1) + ")");
+            }
+
+            int sizeX = size.getInt("x", 0);
+            int sizeY = size.getInt("y", 0);
+            int sizeZ = size.getInt("z", 0);
+            if (sizeX == 0 || sizeY == 0 || sizeZ == 0) {
+                throw new IOException("Invalid litematic region size for '" + entry.getKey() + "'");
+            }
+
+            // Negative size components extend in the negative direction from Position
+            int minX = position.getInt("x", 0) + Math.min(sizeX + 1, 0);
+            int minY = position.getInt("y", 0) + Math.min(sizeY + 1, 0);
+            int minZ = position.getInt("z", 0) + Math.min(sizeZ + 1, 0);
+            regions.add(new LitematicRegion(entry.getKey(), region, minX, minY, minZ, Math.abs(sizeX), Math.abs(sizeY), Math.abs(sizeZ)));
+        }
+
+        if (regions.isEmpty()) {
+            throw new IOException("Litematic contains no readable regions");
+        }
+
+        int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
+        for (LitematicRegion region : regions) {
+            minX = Math.min(minX, region.minX());
+            minY = Math.min(minY, region.minY());
+            minZ = Math.min(minZ, region.minZ());
+            maxX = Math.max(maxX, region.minX() + region.sizeX() - 1);
+            maxY = Math.max(maxY, region.minY() + region.sizeY() - 1);
+            maxZ = Math.max(maxZ, region.minZ() + region.sizeZ() - 1);
+        }
+
+        int width = maxX - minX + 1;
+        int height = maxY - minY + 1;
+        int length = maxZ - minZ + 1;
+        long volumeLong = (long) width * (long) height * (long) length;
+        if (width > Short.MAX_VALUE || height > Short.MAX_VALUE || length > Short.MAX_VALUE || volumeLong > Integer.MAX_VALUE) {
+            throw new IOException("Litematic too large: " + width + "x" + height + "x" + length);
+        }
+        int volume = (int) volumeLong;
+
+        int[] blockIds = new int[volume];
+        int[] meta = new int[volume];
+        List<String> unmapped = new ArrayList<>();
+
+        for (LitematicRegion region : regions) {
+            // Resolve the palette (list of {Name, Properties} compounds)
+            ListTag<? extends Tag<?>, ?> paletteTag = region.tag().get("BlockStatePalette");
+            int paletteSize = paletteTag.size();
+            int[] paletteIds = new int[paletteSize];
+            int[] paletteMeta = new int[paletteSize];
+            int paletteIndex = 0;
+            for (Tag<?> paletteEntry : paletteTag) {
+                if (!(paletteEntry instanceof CompoundTag blockState)) {
+                    throw new IOException("Invalid litematic palette entry in region '" + region.name() + "'");
+                }
+                Identifier identifier = parseLitematicBlockState(blockState);
+                BlockResolution resolution = resolveIdentifier(identifier, version, context);
+                if (resolution != null) {
+                    paletteIds[paletteIndex] = resolution.blockId();
+                    paletteMeta[paletteIndex] = resolution.data();
+                } else {
+                    unmapped.add(displayBlockState(identifier));
+                }
+                paletteIndex++;
+            }
+
+            // Unpack the bit-packed BlockStates array (entries span across long boundaries)
+            long[] blockStates = ((LongArrayTag) region.tag().get("BlockStates")).getValue();
+            int bits = Math.max(2, 32 - Integer.numberOfLeadingZeros(Math.max(1, paletteSize - 1)));
+            long mask = (1L << bits) - 1;
+            long regionVolume = (long) region.sizeX() * (long) region.sizeY() * (long) region.sizeZ();
+            long requiredLongs = (regionVolume * bits + 63) / 64;
+            if (blockStates == null || blockStates.length < requiredLongs) {
+                throw new IOException("Litematic region '" + region.name() + "' has truncated BlockStates ("
+                        + (blockStates == null ? 0 : blockStates.length) + " longs, expected " + requiredLongs + ")");
+            }
+
+            int offsetX = region.minX() - minX;
+            int offsetY = region.minY() - minY;
+            int offsetZ = region.minZ() - minZ;
+            int regionIndex = 0;
+            for (int y = 0; y < region.sizeY(); y++) {
+                for (int z = 0; z < region.sizeZ(); z++) {
+                    for (int x = 0; x < region.sizeX(); x++) {
+                        int palette = extractPackedIndex(blockStates, regionIndex++, bits, mask);
+                        if (palette < 0 || palette >= paletteSize) {
+                            throw new IOException("Litematic region '" + region.name() + "' references palette index "
+                                    + palette + " outside palette size " + paletteSize);
+                        }
+                        int destination = ((y + offsetY) * length + (z + offsetZ)) * width + (x + offsetX);
+                        blockIds[destination] = paletteIds[palette];
+                        meta[destination] = paletteMeta[palette];
+                    }
+                }
+            }
+        }
+
+        if (!unmapped.isEmpty()) {
+            System.err.println("[warn] " + path.getFileName() + ": " + unmapped.size() + " palette entries could not be mapped (converted to air):");
+            for (String name : unmapped) {
+                System.err.println("[warn]   " + name);
+            }
+        }
+
+        return new SchematicData((short) width, (short) height, (short) length, blockIds, meta);
+    }
+
+    /**
+     * Extract a palette index from a Litematica bit-packed long array. Entries are
+     * packed at a fixed bit width and may span across long boundaries.
+     */
+    private static int extractPackedIndex(long[] longs, int index, int bits, long mask) {
+        long startOffset = (long) index * bits;
+        int startArrIndex = (int) (startOffset >> 6);
+        int endArrIndex = (int) (((long) (index + 1) * bits - 1) >> 6);
+        int startBitOffset = (int) (startOffset & 0x3F);
+        if (startArrIndex == endArrIndex) {
+            return (int) ((longs[startArrIndex] >>> startBitOffset) & mask);
+        }
+        return (int) ((longs[startArrIndex] >>> startBitOffset | longs[endArrIndex] << (64 - startBitOffset)) & mask);
+    }
+
+    /**
+     * Convert a Litematica palette entry ({Name, Properties}) into an Identifier
+     * with string state values, matching the Sponge palette parsing.
+     */
+    private static Identifier parseLitematicBlockState(CompoundTag blockState) throws IOException {
+        String name = blockState.getString("Name", null);
+        if (name == null) {
+            throw new IOException("Litematic palette entry is missing a Name");
+        }
+        if (!name.contains(":")) {
+            name = "minecraft:" + name;
+        }
+
+        CompoundTag properties = blockState.getCompound("Properties", null);
+        if (properties == null || properties.getValue().isEmpty()) {
+            return new Identifier(name);
+        }
+
+        Map<String, StateValue<?>> states = new Object2ObjectOpenHashMap<>();
+        for (Map.Entry<String, Tag<?>> property : properties.getValue().entrySet()) {
+            states.put(property.getKey(), new StateValueString(String.valueOf(property.getValue().getBoxedValue())));
+        }
+        return new Identifier(name, states);
+    }
+
+    /** Format an identifier as a blockstate string for warning messages. */
+    private static String displayBlockState(Identifier identifier) {
+        if (identifier.getStates().isEmpty()) {
+            return identifier.getIdentifier();
+        }
+        StringBuilder builder = new StringBuilder(identifier.getIdentifier()).append('[');
+        boolean first = true;
+        for (Map.Entry<String, StateValue<?>> state : new java.util.TreeMap<>(identifier.getStates()).entrySet()) {
+            if (!first) builder.append(',');
+            builder.append(state.getKey()).append('=').append(state.getValue().getBoxed());
+            first = false;
+        }
+        return builder.append(']').toString();
+    }
+
+    /** A litematic region normalized to its minimum corner and absolute size. */
+    private record LitematicRegion(String name, CompoundTag tag, int minX, int minY, int minZ, int sizeX, int sizeY, int sizeZ) {
+    }
+
+    /**
      * Decode a Sponge BlockData varint array into palette indices.
      *
      * @param data          the raw varint bytes.
@@ -383,8 +583,14 @@ public final class SchematicConverter {
      */
     @Nullable
     private static BlockResolution resolvePaletteEntry(String state, Version version, ResolutionContext context) {
-        Identifier parsed = parseBlockState(state);
+        return resolveIdentifier(parseBlockState(state), version, context);
+    }
 
+    /**
+     * Resolve a parsed blockstate identifier to a legacy block ID and data value.
+     */
+    @Nullable
+    private static BlockResolution resolveIdentifier(Identifier parsed, Version version, ResolutionContext context) {
         // 1) Full vanilla pipeline (handles flattened names + block state properties)
         Optional<ChunkerBlockIdentifier> chunker = context.modernResolver(version).to(parsed);
         if (chunker.isPresent()) {
@@ -630,8 +836,8 @@ public final class SchematicConverter {
         return LEGACY_BLOCK_RESOLVER.to(id).orElse(null);
     }
 
-    /** Result of reading a schematic, tracking whether it was a Sponge input. */
-    private record ReadResult(SchematicData data, boolean sponge) {
+    /** Result of reading a schematic, tracking whether mappings were applied at palette level. */
+    private record ReadResult(SchematicData data, boolean paletteResolved) {
     }
 
     /** A palette entry resolved to a legacy block ID and data value. */
