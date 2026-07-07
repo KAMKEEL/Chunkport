@@ -215,6 +215,10 @@ public final class SchematicConverter {
         if (blocks.length != blockData.length) {
             throw new IOException("Mismatched block/data lengths");
         }
+        if (blocks.length != (long) width * height * length) {
+            throw new IOException("Blocks length " + blocks.length + " does not match dimensions "
+                    + width + "x" + height + "x" + length);
+        }
 
         byte[] addBlocks = root.contains("AddBlocks") ? root.getByteArray("AddBlocks") : null;
         byte[] addBlocks2 = root.contains("AddBlocks2") ? root.getByteArray("AddBlocks2") : null;
@@ -614,7 +618,24 @@ public final class SchematicConverter {
 
                 Integer id = resolveTargetBlockId(out.getIdentifier());
                 if (id != null) {
-                    return applyNumericRules(new BlockResolution(id, out.getDataValue().orElse(0)), context);
+                    BlockResolution resolution = new BlockResolution(id, out.getDataValue().orElse(0));
+                    // Numeric rules only fire when no name rule already rewrote the
+                    // block inside the resolvers, otherwise two single-step rules
+                    // could chain (name rule output hit by an unrelated numeric rule).
+                    // A reader-applied rule is marked by a PreservedIdentifier, a
+                    // writer-applied rule is detected by comparing against a
+                    // mapping-free resolver.
+                    if (context.legacySimpleMappingsActive) {
+                        boolean nameRuleApplied = chunker.get().getPreservedIdentifier() != null;
+                        if (!nameRuleApplied) {
+                            Optional<Identifier> plain = context.plainWriterResolver.from(chunker.get());
+                            nameRuleApplied = plain.isEmpty() || !plain.get().getIdentifier().equals(out.getIdentifier());
+                        }
+                        if (nameRuleApplied) {
+                            return resolution;
+                        }
+                    }
+                    return applyNumericRules(resolution, context);
                 }
             }
         }
@@ -672,9 +693,11 @@ public final class SchematicConverter {
             return currentMeta;
         }
         int value = dataOut.getAsInt();
-        if (value == 0 && currentMeta != 0) {
+        if (value == 0 && currentMeta != 0 && lookup.getDataValue().isPresent()) {
             // Probe with a different data value, if the rule still matches and still
-            // outputs zero, a state list consumed the data and the input meta wins
+            // outputs zero, a state list consumed the data and the input meta wins.
+            // Only probe when the original lookup carried data, otherwise the probe
+            // could match data-constrained rules the real lookup never could.
             int probe = currentMeta == 15 ? 14 : 15;
             Optional<Identifier> probed = mappingsFile.convertBlock(Identifier.fromData(lookup.getIdentifier(), OptionalInt.of(probe)));
             if (probed.isPresent() && probed.get().getIdentifier().equals(converted.getIdentifier())) {
@@ -764,10 +787,18 @@ public final class SchematicConverter {
         byte[] addBlocks = null;
         byte[] addBlocks2 = null;
         byte[] addData = null;
+        int truncatedIds = 0;
+        int truncatedMeta = 0;
 
         for (int i = 0; i < volume; i++) {
             int id = schematic.getBlockIds()[i];
             int meta = schematic.getBlockData()[i];
+            if ((!allowNeids && id > 4095) || id > 65535) {
+                truncatedIds++;
+            }
+            if (meta > 65535) {
+                truncatedMeta++;
+            }
             blocks[i] = (byte) (id & 0xFF);
             if (id > 255) {
                 if (addBlocks == null) addBlocks = new byte[(volume >> 1) + 1];
@@ -809,7 +840,19 @@ public final class SchematicConverter {
             root.put("AddData", new ByteArrayTag(addData));
         }
 
-        Files.createDirectories(output.getParent());
+        if (truncatedIds > 0) {
+            System.err.println("[warn] " + output.getFileName() + ": " + truncatedIds
+                    + " blocks exceed the writable ID range" + (allowNeids ? "" : " (enable NEIDs?)") + " and were truncated");
+        }
+        if (truncatedMeta > 0) {
+            System.err.println("[warn] " + output.getFileName() + ": " + truncatedMeta
+                    + " blocks exceed the writable data range and were truncated");
+        }
+
+        Path parent = output.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
         writeWithRootName(output, root);
     }
 
@@ -886,6 +929,8 @@ public final class SchematicConverter {
         final boolean legacySimpleMappingsActive;
         final WorldConverter converter;
         final JavaLegacyBlockIdentifierResolver legacyWriterResolver;
+        /** Resolver without any mappings, used to detect whether a name rule fired. */
+        final JavaLegacyBlockIdentifierResolver plainWriterResolver;
         final Map<Version, JavaBlockIdentifierResolver> modernResolvers = new HashMap<>();
 
         ResolutionContext(@Nullable MappingsFile mappingsFile, boolean legacySimpleMappings) {
@@ -899,6 +944,9 @@ public final class SchematicConverter {
             }
             converter.setLegacySimpleMappings(legacySimpleMappingsActive);
             legacyWriterResolver = new JavaLegacyBlockIdentifierResolver(converter, TARGET_VERSION, false, false);
+            plainWriterResolver = legacySimpleMappingsActive
+                    ? new JavaLegacyBlockIdentifierResolver(new WorldConverter(UUID.randomUUID()), TARGET_VERSION, false, false)
+                    : legacyWriterResolver;
         }
 
         JavaBlockIdentifierResolver modernResolver(Version version) {

@@ -285,6 +285,36 @@ class SchematicConverterTests {
     }
 
     @Test
+    void rejectsClassicSchematicWithTruncatedArrays() throws Exception {
+        // Blocks/Data shorter than Width*Height*Length must fail at read time
+        CompoundTag root = new CompoundTag();
+        root.put("Width", new ShortTag((short) 2));
+        root.put("Height", new ShortTag((short) 2));
+        root.put("Length", new ShortTag((short) 2));
+        root.put("Materials", new com.hivemc.chunker.nbt.tags.primitive.StringTag("Alpha"));
+        root.put("Blocks", new ByteArrayTag(new byte[4]));
+        root.put("Data", new ByteArrayTag(new byte[4]));
+
+        Path input = Files.createTempFile("truncated", ".schematic");
+        Tag.writeGZipJavaNBT(input.toFile(), root);
+
+        assertThrows(java.io.IOException.class, () -> SchematicConverter.read(input));
+    }
+
+    @Test
+    void writesToParentlessRelativePath() throws Exception {
+        // Output paths without a parent directory must not NPE
+        Path cwdFile = Path.of("parentless-test-output.schematic");
+        try {
+            SchematicData data = new SchematicData((short) 1, (short) 1, (short) 1, new int[]{1}, new int[]{0});
+            SchematicConverter.writeClassic(cwdFile, data, true);
+            assertTrue(Files.exists(cwdFile));
+        } finally {
+            Files.deleteIfExists(cwdFile);
+        }
+    }
+
+    @Test
     void writesSchematicRootName() throws Exception {
         Path output = Files.createTempFile("named", ".schematic");
         SchematicData data = new SchematicData((short) 1, (short) 1, (short) 1, new int[]{1}, new int[]{0});

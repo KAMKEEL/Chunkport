@@ -688,6 +688,19 @@ class SchematicConversionMatrixTests {
         }
 
         @Test
+        void numericRulesDoNotChainAfterNameRules() throws Exception {
+            // A name rule output must not be re-run through numeric rules:
+            // oak_planks -> stone (name rule) must NOT then hit 1:0 -> 4:0
+            String rules = "minecraft:oak_planks -> minecraft:stone\n1:0 -> 4:0\n";
+
+            SchematicData planks = convertAndRead(sponge("minecraft:oak_planks"), mappings(rules), true);
+            assertEquals(1, planks.getBlockIds()[0], "planks map to stone via the name rule, the numeric rule must not chain");
+
+            SchematicData stone = convertAndRead(sponge("minecraft:stone"), mappings(rules), true);
+            assertEquals(4, stone.getBlockIds()[0], "original stone still hits the numeric rule");
+        }
+
+        @Test
         void spongeNamespaceDataToNamespaceData() throws Exception {
             // minecraft:stone[data=1] -> uptodate:stone[data=1] on a flattened granite
             loadLevelDat(Map.of("uptodate:stone", 15137));
