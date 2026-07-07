@@ -399,7 +399,7 @@ public final class SchematicConverter {
                     Optional<Identifier> mapped = context.mappingsFile.convertBlock(mappingInput);
                     if (mapped.isPresent()) {
                         Identifier converted = mapped.get();
-                        Integer id = resolveTargetBlockId(converted.getIdentifier());
+                        Integer id = resolveConvertedBlockId(converted, TARGET_BLOCK_ID_RESOLVER);
                         if (id != null) {
                             return new BlockResolution(id, converted.getDataValue().orElse(data.orElse(0)));
                         }
@@ -408,7 +408,7 @@ public final class SchematicConverter {
 
                 Integer id = resolveTargetBlockId(out.getIdentifier());
                 if (id != null) {
-                    return new BlockResolution(id, out.getDataValue().orElse(0));
+                    return applyNumericRules(new BlockResolution(id, out.getDataValue().orElse(0)), context);
                 }
             }
         }
@@ -417,7 +417,7 @@ public final class SchematicConverter {
         if (context.mappingsFile != null) {
             Optional<Identifier> mapped = context.mappingsFile.convertBlock(new Identifier(parsed.getIdentifier()));
             if (mapped.isPresent()) {
-                Integer id = resolveTargetBlockId(mapped.get().getIdentifier());
+                Integer id = resolveConvertedBlockId(mapped.get(), TARGET_BLOCK_ID_RESOLVER);
                 if (id != null) {
                     return new BlockResolution(id, mapped.get().getDataValue().orElse(0));
                 }
@@ -427,9 +427,30 @@ public final class SchematicConverter {
         // 3) Direct lookup, the identifier may exist in level.dat under the same name
         Integer direct = resolveTargetBlockId(parsed.getIdentifier());
         if (direct != null) {
-            return new BlockResolution(direct, 0);
+            return applyNumericRules(new BlockResolution(direct, 0), context);
         }
         return null;
+    }
+
+    /**
+     * Apply numeric ID rules (e.g. "52 -> minecraft:air" or "1:1 -> 4:0") to a
+     * resolved block. Name-based rules take precedence, numeric rules only fire
+     * when no name rule already rewrote the block.
+     */
+    private static BlockResolution applyNumericRules(BlockResolution resolution, ResolutionContext context) {
+        if (context.mappingsFile == null) {
+            return resolution;
+        }
+        Identifier numericInput = Identifier.fromData(String.valueOf(resolution.blockId()), OptionalInt.of(resolution.data()));
+        Optional<Identifier> mapped = context.mappingsFile.convertBlock(numericInput);
+        if (mapped.isEmpty()) {
+            return resolution;
+        }
+        Integer id = resolveConvertedBlockId(mapped.get(), TARGET_BLOCK_ID_RESOLVER);
+        if (id == null) {
+            return resolution;
+        }
+        return new BlockResolution(id, mapped.get().getDataValue().orElse(resolution.data()));
     }
 
     /**
@@ -467,17 +488,24 @@ public final class SchematicConverter {
         int[] meta = Arrays.copyOf(data.getBlockData(), data.getBlockData().length);
 
         for (int i = 0; i < ids.length; i++) {
-            String identifier = resolveIdentifierFromMappings(ids[i]);
-            if (identifier == null) {
-                continue;
-            }
-
             final int index = i;
             final int currentMeta = meta[i];
             OptionalInt metaValue = legacySimpleMappings ? OptionalInt.of(currentMeta) : OptionalInt.empty();
-            Identifier input = Identifier.fromData(identifier, metaValue);
-            mappingsFile.convertBlock(input).ifPresent(converted -> {
-                Integer newId = resolveLegacyBlockId(converted.getIdentifier());
+
+            // Try a rule keyed by the block identifier first (e.g. minecraft:mob_spawner)
+            String identifier = resolveIdentifierFromMappings(ids[i]);
+            Optional<Identifier> mapped = Optional.empty();
+            if (identifier != null) {
+                mapped = mappingsFile.convertBlock(Identifier.fromData(identifier, metaValue));
+            }
+
+            // Fall back to numeric ID rules (e.g. "52 -> minecraft:air" or "112:3 -> ...")
+            if (mapped.isEmpty()) {
+                mapped = mappingsFile.convertBlock(Identifier.fromData(String.valueOf(ids[i]), metaValue));
+            }
+
+            mapped.ifPresent(converted -> {
+                Integer newId = resolveConvertedBlockId(converted, LEGACY_BLOCK_RESOLVER);
                 if (newId != null) {
                     ids[index] = newId;
                     meta[index] = converted.getDataValue().orElse(currentMeta);
@@ -563,6 +591,23 @@ public final class SchematicConverter {
             return levelId;
         }
         return LEGACY_BLOCK_RESOLVER.from(identifier).orElse(null);
+    }
+
+    /**
+     * Resolve a mapping output to a numeric block ID. Outputs prefixed with '='
+     * in the mapping file carry the meta:no_level_convert marker and must skip
+     * the level.dat lookup, resolving against the vanilla table (or as a raw
+     * numeric ID) instead.
+     */
+    private static Integer resolveConvertedBlockId(Identifier converted, JavaLegacyBlockIDResolver idResolver) {
+        String identifier = converted.getIdentifier();
+        if (!converted.getStates().containsKey("meta:no_level_convert")) {
+            Integer levelId = LevelConvertMappings.getLegacyId(identifier);
+            if (levelId != null) {
+                return levelId;
+            }
+        }
+        return idResolver.from(identifier).orElse(null);
     }
 
     /**

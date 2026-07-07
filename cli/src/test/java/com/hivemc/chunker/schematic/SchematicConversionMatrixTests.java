@@ -511,6 +511,169 @@ class SchematicConversionMatrixTests {
         }
     }
 
+    // ================= mapping rule formats: full cross product =================
+
+    /**
+     * Every supported mapping.txt rule format, tested for both input formats:
+     *   LHS: ID | ID:META | NAMESPACE | NAMESPACE[data=N]
+     *   RHS: ID | ID:META | NAMESPACE | NAMESPACE[data=N] | =NAMESPACE
+     */
+    @Nested
+    class RuleFormats {
+        /** Build a classic 1x1x1 schematic with a single id:meta block. */
+        private Path classic(int id, int meta) throws Exception {
+            Path input = Files.createTempFile("fmt", ".schematic");
+            SchematicConverter.writeClassic(input, new SchematicData((short) 1, (short) 1, (short) 1, new int[]{id}, new int[]{meta}), true);
+            return input;
+        }
+
+        /** Build a Sponge 1x1x1 .schem with a single palette entry. */
+        private Path sponge(String paletteEntry) throws Exception {
+            LinkedHashMap<String, Integer> palette = new LinkedHashMap<>();
+            palette.put(paletteEntry, 0);
+            return writeSponge(DV_1_13_2, 1, 1, 1, palette, new int[]{0});
+        }
+
+        private void assertConverted(Path input, String rules, int expectedId, int expectedMeta) throws Exception {
+            SchematicData result = convertAndRead(input, mappings(rules), true);
+            assertEquals(expectedId, result.getBlockIds()[0], "wrong id for rules: " + rules);
+            assertEquals(expectedMeta, result.getBlockData()[0], "wrong meta for rules: " + rules);
+        }
+
+        // ---------- classic .schematic input ----------
+
+        @Test
+        void classicIdToNamespace() throws Exception {
+            // 52 -> minecraft:air
+            assertConverted(classic(52, 0), "52 -> minecraft:air\n", 0, 0);
+        }
+
+        @Test
+        void classicIdToNamespaceWithData() throws Exception {
+            // 19 -> custom:sponge[data=5]
+            loadLevelDat(Map.of("custom:sponge", 15100));
+            assertConverted(classic(19, 0), "19 -> custom:sponge[data=5]\n", 15100, 5);
+        }
+
+        @Test
+        void classicIdToId() throws Exception {
+            // 41 -> 2001 (meta carried over)
+            assertConverted(classic(41, 3), "41 -> 2001\n", 2001, 3);
+        }
+
+        @Test
+        void classicIdToIdWithMeta() throws Exception {
+            // 41 -> 2001:7
+            assertConverted(classic(41, 0), "41 -> 2001:7\n", 2001, 7);
+        }
+
+        @Test
+        void classicIdMetaToNamespace() throws Exception {
+            // 1:1 -> minecraft:cobblestone, plain stone untouched
+            Path input = Files.createTempFile("fmt", ".schematic");
+            SchematicConverter.writeClassic(input, new SchematicData((short) 2, (short) 1, (short) 1, new int[]{1, 1}, new int[]{1, 0}), true);
+            SchematicData result = convertAndRead(input, mappings("1:1 -> minecraft:cobblestone[data=0]\n"), true);
+            assertEquals(4, result.getBlockIds()[0], "granite (1:1) must remap");
+            assertEquals(0, result.getBlockData()[0]);
+            assertEquals(1, result.getBlockIds()[1], "plain stone (1:0) must not remap");
+            assertEquals(0, result.getBlockData()[1]);
+        }
+
+        @Test
+        void classicIdMetaToIdMeta() throws Exception {
+            // 1:1 -> 4:0
+            assertConverted(classic(1, 1), "1:1 -> 4:0\n", 4, 0);
+        }
+
+        @Test
+        void classicNamespaceToId() throws Exception {
+            // minecraft:gold_block -> 2001
+            assertConverted(classic(41, 0), "minecraft:gold_block -> 2001\n", 2001, 0);
+        }
+
+        @Test
+        void classicNamespaceToIdWithMeta() throws Exception {
+            // minecraft:gold_block -> 2001:7
+            assertConverted(classic(41, 0), "minecraft:gold_block -> 2001:7\n", 2001, 7);
+        }
+
+        @Test
+        void classicNamespaceToNamespaceWithData() throws Exception {
+            // minecraft:sponge -> custom:sponge[data=5], output data overrides input meta
+            loadLevelDat(Map.of("custom:sponge", 15100));
+            assertConverted(classic(19, 0), "minecraft:sponge -> custom:sponge[data=5]\n", 15100, 5);
+        }
+
+        @Test
+        void classicNamespaceDataToIdMeta() throws Exception {
+            // minecraft:stone[data=1] -> 2002:3
+            assertConverted(classic(1, 1), "minecraft:stone[data=1] -> 2002:3\n", 2002, 3);
+        }
+
+        @Test
+        void classicNoLevelConvertPrefix() throws Exception {
+            // = prefix must skip the level.dat lookup and use the vanilla ID table
+            loadLevelDat(Map.of("minecraft:diamond_block", 9999));
+            assertConverted(classic(41, 0), "minecraft:gold_block -> =minecraft:diamond_block\n", 57, 0);
+        }
+
+        @Test
+        void classicLevelDatAppliesWithoutPrefix() throws Exception {
+            // sanity for the test above: without '=' the level.dat ID wins
+            loadLevelDat(Map.of("minecraft:diamond_block", 9999));
+            assertConverted(classic(41, 0), "minecraft:gold_block -> minecraft:diamond_block\n", 9999, 0);
+        }
+
+        // ---------- Sponge .schem input ----------
+
+        @Test
+        void spongeNamespaceToId() throws Exception {
+            // minecraft:gold_block -> 2001
+            assertConverted(sponge("minecraft:gold_block"), "minecraft:gold_block -> 2001\n", 2001, 0);
+        }
+
+        @Test
+        void spongeNamespaceToIdWithMeta() throws Exception {
+            // minecraft:gold_block -> 2001:7
+            assertConverted(sponge("minecraft:gold_block"), "minecraft:gold_block -> 2001:7\n", 2001, 7);
+        }
+
+        @Test
+        void spongeNamespaceToNamespaceWithData() throws Exception {
+            // The wet_sponge pattern from the real mapping.txt:
+            // minecraft:wet_sponge -> uptodate:sponge[data=1]
+            loadLevelDat(Map.of("uptodate:sponge", 15100));
+            assertConverted(sponge("minecraft:wet_sponge"), "minecraft:wet_sponge -> uptodate:sponge[data=1]\n", 15100, 1);
+        }
+
+        @Test
+        void spongeNumericIdRule() throws Exception {
+            // Numeric rules apply to the resolved legacy ID, spawner resolves to 52 first
+            assertConverted(sponge("minecraft:spawner"), "52 -> minecraft:air\n", 0, 0);
+        }
+
+        @Test
+        void spongeNumericIdMetaRule() throws Exception {
+            // granite flattens to 1:1 before the numeric rule fires
+            assertConverted(sponge("minecraft:granite"), "1:1 -> 4:0\n", 4, 0);
+            // plain stone (1:0) must not match the 1:1 rule
+            assertConverted(sponge("minecraft:stone"), "1:1 -> 4:0\n", 1, 0);
+        }
+
+        @Test
+        void spongeNameRuleForSpawner() throws Exception {
+            // Name-based spawner removal (the second form used in the real mapping.txt)
+            assertConverted(sponge("minecraft:spawner"), "minecraft:mob_spawner -> minecraft:air\n", 0, 0);
+        }
+
+        @Test
+        void spongeNamespaceDataToNamespaceData() throws Exception {
+            // minecraft:stone[data=1] -> uptodate:stone[data=1] on a flattened granite
+            loadLevelDat(Map.of("uptodate:stone", 15137));
+            assertConverted(sponge("minecraft:granite"), "minecraft:stone[data=1] -> uptodate:stone[data=1]\n", 15137, 1);
+        }
+    }
+
     // ================= mixed geometry =================
 
     @Nested
