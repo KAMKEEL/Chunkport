@@ -22,7 +22,7 @@ but Chunkport is designed, tested and supported for the **`JAVA_1_7_10`** target
    ```
    Converter.bat            <- the runner (dist/Converter.bat)
    chunker-cli-x.y.z.jar    <- the Chunkport jar
-   plug.dat                 <- the level.dat of YOUR 1.7.10 server (block ID registry)
+   level.dat                <- copied from YOUR 1.7.10 server (block ID registry)
    mapping.txt              <- your block mapping rules (see below)
    input_schematic\         <- drop .schem / .schematic / .litematic files here
    input_world\             <- or drop the contents of a world folder here
@@ -39,7 +39,7 @@ but Chunkport is designed, tested and supported for the **`JAVA_1_7_10`** target
 | What | Why |
 |---|---|
 | Java 17+ | runs the converter (the runner locates it automatically) |
-| `plug.dat` | the target server's `level.dat` — its FML registry maps names like `etfuturum:tuff` to numeric IDs |
+| `level.dat` | a copy of the target server's `level.dat` — its FML registry maps names like `etfuturum:tuff` to numeric IDs |
 | `mapping.txt` | your rules for turning modern blocks into your server's mod blocks |
 | NEID-aware WorldEdit | to paste the output, the server's WorldEdit must read `AddBlocks2` (see [worldedit-gtnh](https://github.com/KAMKEEL/worldedit-gtnh)) |
 
@@ -50,7 +50,7 @@ but Chunkport is designed, tested and supported for the **`JAVA_1_7_10`** target
 ```
 java -jar chunker-cli.jar --input-schem <folder> -f JAVA_1_7_10 --output-schem <folder>
      --enableNEIDs --legacySimpleMappings
-     --levelConvert plug.dat --simpleBlockMappings mapping.txt
+     --levelConvert level.dat --simpleBlockMappings mapping.txt
 ```
 
 Input formats (auto-detected, may be mixed in one folder, subfolders included):
@@ -74,18 +74,23 @@ the correct legacy data values.
 ```
 java -jar chunker-cli.jar -i <world folder> -f JAVA_1_7_10 -o <output folder>
      --enableNEIDs --legacySimpleMappings
-     --levelConvert plug.dat --simpleBlockMappings mapping.txt
+     --levelConvert level.dat --simpleBlockMappings mapping.txt
 ```
 
 ---
 
-## plug.dat — the block ID registry
+## level.dat — the block ID registry
 
-`--levelConvert` takes the **`level.dat` of the destination 1.7.10 server**. Its FML
-`ItemData` section is the authoritative name → numeric ID registry for every block,
-vanilla and modded. Whenever a mapping produces a name like `uptodate:grass_path`,
-Chunkport looks the numeric ID up here first, falling back to the built-in vanilla
-tables. Without it, mod blocks cannot resolve and the converter tells you so.
+`--levelConvert` takes the **`level.dat` of the destination 1.7.10 server** (copy it
+next to the runner). Its FML `ItemData` section is the authoritative name → numeric
+ID registry for every block, vanilla and modded. Whenever a mapping produces a name
+like `uptodate:grass_path`, Chunkport looks the numeric ID up here first, falling
+back to the built-in vanilla tables. Without it, mod blocks cannot resolve and the
+converter tells you so.
+
+> Not to be confused with the `level.dat` *inside* `input_world\` — that one belongs
+> to the world being converted. The registry copy sits next to `Converter.bat`.
+> The legacy name `plug.dat` is still accepted by the runner.
 
 ---
 
@@ -174,7 +179,7 @@ minecraft:wet_sponge -> uptodate:sponge[data=1]
 minecraft:blackstone_stairs -> netherlicious:BlackstoneStairs -> STAIRS
 ```
 
-`--convertMapping --simpleBlockMappings mapping.txt --levelConvert plug.dat` compiles
+`--convertMapping --simpleBlockMappings mapping.txt --levelConvert level.dat` compiles
 your mapping file to `generated.json` for inspection.
 
 ---
@@ -185,7 +190,7 @@ your mapping file to `generated.json` for inspection.
 |---|---|
 | `--input-schem <dir>` / `--output-schem <dir>` | schematic conversion mode |
 | `-i <dir>` / `-o <dir>` / `-f JAVA_1_7_10` | world conversion mode |
-| `--levelConvert <level.dat>` | target server block ID registry (plug.dat) |
+| `--levelConvert <level.dat>` | target server block ID registry |
 | `--simpleBlockMappings <mapping.txt>` | block mapping rules (this document's format) |
 | `--blockMappings <json/file>` | raw Chunker JSON mappings (advanced) |
 | `--enableNEIDs` | emit `AddBlocks2`/`AddData` for IDs > 4095 / data > 15 |
@@ -201,7 +206,7 @@ your mapping file to `generated.json` for inspection.
 |---|---|
 | `[warn] ...: N palette entries could not be mapped (converted to air)` | those modern blocks have no 1.7.10 equivalent and no rule — add lines to mapping.txt or accept air |
 | Pasted blocks are *wrong* mod/vanilla blocks (e.g. ore instead of bricks) | the server's WorldEdit doesn't read `AddBlocks2` — every ID is truncated to 12 bits. Update to a NEID-aware WorldEdit ([worldedit-gtnh](https://github.com/KAMKEEL/worldedit-gtnh)); on hybrid servers the Bukkit WorldEdit plugin and AsyncWorldEdit need the fix too |
-| `ERROR: --levelConvert level.dat not found` | fix the path, or copy the server's `level.dat` next to the jar as `plug.dat` |
+| `ERROR: --levelConvert level.dat not found` | fix the path, or copy the target server's `level.dat` next to `Converter.bat` |
 | `WARNING: no FML block ID mappings found in ...` | the file isn't a Forge server level.dat (no `FML → ItemData` section) |
 | Paste appears offset from where you stand | the source schematic's copy anchor is preserved (`WEOffset`); that is faithful WorldEdit behaviour |
 | Signs/chests are empty | entities and tile entities are not converted yet (known limitation) |
