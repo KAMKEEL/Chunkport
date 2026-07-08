@@ -41,8 +41,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
@@ -166,7 +168,8 @@ public final class SchematicConverter {
 
     private static boolean isSchematicFile(Path path) {
         String name = path.getFileName().toString().toLowerCase();
-        return name.endsWith(".schem") || name.endsWith(".schematic") || name.endsWith(".litematic");
+        return name.endsWith(".schem") || name.endsWith(".schematic") || name.endsWith(".litematic")
+                || name.endsWith(".bp");
     }
 
     /**
@@ -178,6 +181,12 @@ public final class SchematicConverter {
     }
 
     private static ReadResult readInternal(Path path, ResolutionContext context) throws IOException {
+        // Axiom blueprints are a container format (magic + header + thumbnail +
+        // block data), not a bare gzipped NBT file
+        if (path.getFileName().toString().toLowerCase().endsWith(".bp")) {
+            return new ReadResult(readBlueprint(path, context), true);
+        }
+
         CompoundTag root = readRoot(path);
         if (root == null) {
             throw new IOException("Invalid schematic: no root tag present");
@@ -508,6 +517,196 @@ public final class SchematicConverter {
         }
 
         return new SchematicData((short) width, (short) height, (short) length, blockIds, meta);
+    }
+
+    /** Magic number identifying an Axiom blueprint file. */
+    private static final int BLUEPRINT_MAGIC = 182827830;
+
+    /**
+     * Read an Axiom .bp blueprint. The file is a container: a magic number followed
+     * by three length-prefixed blobs (header NBT, thumbnail PNG, gzipped block data).
+     * The block data holds 16x16x16 sections at chunk coordinates, each with a
+     * chunk-style palette and a padded packed long array (entries never span longs,
+     * minimum 4 bits per entry). All sections are composed into one schematic.
+     */
+    private static SchematicData readBlueprint(Path path, ResolutionContext context) throws IOException {
+        CompoundTag root;
+        try (DataInputStream in = new DataInputStream(new BufferedInputStream(Files.newInputStream(path)))) {
+            int magic = in.readInt();
+            if (magic != BLUEPRINT_MAGIC) {
+                throw new IOException("Not an Axiom blueprint (unexpected magic number)");
+            }
+
+            skipLengthPrefixed(in); // header NBT (metadata)
+            skipLengthPrefixed(in); // thumbnail PNG
+
+            int blockDataLength = in.readInt();
+            if (blockDataLength < 0) {
+                throw new IOException("Invalid blueprint block data length");
+            }
+            byte[] blockData = new byte[blockDataLength];
+            in.readFully(blockData);
+
+            ByteArrayTag.setMaxDecodeLength(SCHEMATIC_MAX_BYTE_ARRAY_LENGTH);
+            IntArrayTag.setMaxDecodeLength(SCHEMATIC_MAX_INT_ARRAY_LENGTH);
+            LongArrayTag.setMaxDecodeLength(SCHEMATIC_MAX_LONG_ARRAY_LENGTH);
+            try (GZIPInputStream gzip = new GZIPInputStream(new java.io.ByteArrayInputStream(blockData));
+                 DataInputStream nbtStream = new DataInputStream(gzip)) {
+                root = Tag.decodeNamed(Reader.toJavaReader(nbtStream), CompoundTag.class).tag();
+            } finally {
+                ByteArrayTag.resetMaxDecodeLength();
+                IntArrayTag.resetMaxDecodeLength();
+                LongArrayTag.resetMaxDecodeLength();
+            }
+        }
+
+        if (root == null) {
+            throw new IOException("Blueprint contains no block data");
+        }
+
+        // Determine the Java version the palette identifiers belong to
+        int dataVersion = root.getInt("DataVersion", -1);
+        Version version;
+        if (dataVersion >= FLATTENING_DATA_VERSION) {
+            version = JavaDataVersion.getNearestVersion(dataVersion).getVersion();
+        } else {
+            version = DEFAULT_SPONGE_VERSION;
+        }
+
+        Tag<?> regionTag = root.get("BlockRegion");
+        if (!(regionTag instanceof ListTag<?, ?> regions) || regions.size() == 0) {
+            throw new IOException("Blueprint contains no BlockRegion sections");
+        }
+
+        // Compute the enclosing bounding box across all 16^3 sections
+        int minSX = Integer.MAX_VALUE, minSY = Integer.MAX_VALUE, minSZ = Integer.MAX_VALUE;
+        int maxSX = Integer.MIN_VALUE, maxSY = Integer.MIN_VALUE, maxSZ = Integer.MIN_VALUE;
+        for (Object entry : regions) {
+            CompoundTag section = (CompoundTag) entry;
+            minSX = Math.min(minSX, section.getInt("X"));
+            minSY = Math.min(minSY, section.getInt("Y"));
+            minSZ = Math.min(minSZ, section.getInt("Z"));
+            maxSX = Math.max(maxSX, section.getInt("X"));
+            maxSY = Math.max(maxSY, section.getInt("Y"));
+            maxSZ = Math.max(maxSZ, section.getInt("Z"));
+        }
+
+        int width = (maxSX - minSX + 1) * 16;
+        int height = (maxSY - minSY + 1) * 16;
+        int length = (maxSZ - minSZ + 1) * 16;
+        long volumeLong = (long) width * (long) height * (long) length;
+        if (width > Short.MAX_VALUE || height > Short.MAX_VALUE || length > Short.MAX_VALUE || volumeLong > Integer.MAX_VALUE) {
+            throw new IOException("Blueprint too large: " + width + "x" + height + "x" + length);
+        }
+        int volume = (int) volumeLong;
+
+        int[] blockIds = new int[volume];
+        int[] meta = new int[volume];
+        Set<String> unmapped = new LinkedHashSet<>();
+        // Identical palette entries repeat across sections, resolve each state once
+        Map<String, BlockResolution> resolutionCache = new HashMap<>();
+
+        for (Object entry : regions) {
+            CompoundTag section = (CompoundTag) entry;
+            CompoundTag blockStates = section.getCompound("BlockStates", null);
+            if (blockStates == null) {
+                continue;
+            }
+
+            Tag<?> paletteTag = blockStates.get("Palette");
+            if (!(paletteTag instanceof ListTag<?, ?> palette) || palette.size() == 0) {
+                continue;
+            }
+
+            // Resolve the palette (chunk-style {Name, Properties} compounds)
+            int paletteSize = palette.size();
+            int[] paletteIds = new int[paletteSize];
+            int[] paletteMeta = new int[paletteSize];
+            int paletteIndex = 0;
+            for (Object paletteEntry : palette) {
+                Identifier identifier = parseLitematicBlockState((CompoundTag) paletteEntry);
+                String cacheKey = displayBlockState(identifier);
+                BlockResolution resolution = resolutionCache.get(cacheKey);
+                if (resolution == null && !resolutionCache.containsKey(cacheKey)) {
+                    resolution = resolveIdentifier(identifier, version, context);
+                    resolutionCache.put(cacheKey, resolution);
+                    if (resolution == null) {
+                        unmapped.add(cacheKey);
+                    }
+                }
+                if (resolution != null) {
+                    paletteIds[paletteIndex] = resolution.blockId();
+                    paletteMeta[paletteIndex] = resolution.data();
+                }
+                paletteIndex++;
+            }
+
+            int offsetX = (section.getInt("X") - minSX) * 16;
+            int offsetY = (section.getInt("Y") - minSY) * 16;
+            int offsetZ = (section.getInt("Z") - minSZ) * 16;
+
+            LongArrayTag dataTag = blockStates.get("Data") instanceof LongArrayTag longs ? longs : null;
+            long[] packed = dataTag != null ? dataTag.getValue() : null;
+
+            if (paletteSize == 1 || packed == null || packed.length == 0) {
+                // Single-state section, every block is palette entry 0
+                for (int y = 0; y < 16; y++) {
+                    for (int z = 0; z < 16; z++) {
+                        for (int x = 0; x < 16; x++) {
+                            int destination = ((y + offsetY) * length + (z + offsetZ)) * width + (x + offsetX);
+                            blockIds[destination] = paletteIds[0];
+                            meta[destination] = paletteMeta[0];
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Padded chunk-style packing: fixed width, entries never span longs
+            int bits = Math.max(4, 32 - Integer.numberOfLeadingZeros(paletteSize - 1));
+            int perLong = 64 / bits;
+            long mask = (1L << bits) - 1;
+            long requiredLongs = (4096 + perLong - 1) / perLong;
+            if (packed.length < requiredLongs) {
+                throw new IOException("Blueprint section (" + section.getInt("X") + "," + section.getInt("Y") + ","
+                        + section.getInt("Z") + ") has truncated block data (" + packed.length + " longs, expected " + requiredLongs + ")");
+            }
+
+            int index = 0;
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    for (int x = 0; x < 16; x++) {
+                        int palIndex = (int) ((packed[index / perLong] >>> ((index % perLong) * bits)) & mask);
+                        if (palIndex >= paletteSize) {
+                            throw new IOException("Blueprint section references palette index " + palIndex
+                                    + " outside palette size " + paletteSize);
+                        }
+                        int destination = ((y + offsetY) * length + (z + offsetZ)) * width + (x + offsetX);
+                        blockIds[destination] = paletteIds[palIndex];
+                        meta[destination] = paletteMeta[palIndex];
+                        index++;
+                    }
+                }
+            }
+        }
+
+        if (!unmapped.isEmpty()) {
+            System.err.println("[warn] " + path.getFileName() + ": " + unmapped.size() + " palette entries could not be mapped (converted to air):");
+            for (String name : unmapped) {
+                System.err.println("[warn]   " + name);
+            }
+        }
+
+        return new SchematicData((short) width, (short) height, (short) length, blockIds, meta);
+    }
+
+    /** Skip one length-prefixed blob in a blueprint container. */
+    private static void skipLengthPrefixed(DataInputStream in) throws IOException {
+        int blobLength = in.readInt();
+        if (blobLength < 0) {
+            throw new IOException("Invalid blueprint section length");
+        }
+        in.skipNBytes(blobLength);
     }
 
     /**

@@ -6,8 +6,9 @@ It is a fork of [HiveGames' Chunker](https://github.com/HiveGamesOSS/Chunker) sp
 
 ```
 .schematic (1.12-)  ┐
-.schem  (Sponge 1-3)├──►  1.7.10 .schematic  (with NEID AddBlocks2/AddData)
-.litematic          ┘
+.schem  (Sponge 1-3)│
+.litematic          ├──►  1.7.10 .schematic  (with NEID AddBlocks2/AddData)
+.bp (Axiom)         ┘
 modern Java world  ────►  1.7.10 Anvil world
 ```
 
@@ -24,7 +25,7 @@ but Chunkport is designed, tested and supported for the **`JAVA_1_7_10`** target
    chunker-cli-x.y.z.jar    <- the Chunkport jar
    level.dat                <- copied from YOUR 1.7.10 server (block ID registry)
    mapping.txt              <- your block mapping rules (see below)
-   input_schematic\         <- drop .schem / .schematic / .litematic files here
+   input_schematic\         <- drop .schem / .schematic / .litematic / .bp files here
    input_world\             <- or drop the contents of a world folder here
    ```
 2. Double-click **`Converter.bat`** and pick a mode. It finds Java 17+ by itself
@@ -60,6 +61,7 @@ Input formats (auto-detected, may be mixed in one folder, subfolders included):
 | `.schematic` | classic MCEdit/WorldEdit (≤1.12) | numeric IDs, `AddBlocks`/`AddBlocks2`/`AddData` supported |
 | `.schem` | Sponge v1, v2 and v3 (1.13 → 1.21+) | palette resolved per the file's `DataVersion` |
 | `.litematic` | Litematica v4-v7 | all sub-regions composed into one schematic |
+| `.bp` | Axiom blueprints | all 16³ sections composed into one schematic |
 
 Output is always a classic **1.7.10 `.schematic`**: `AddBlocks` for IDs 256–4095,
 `AddBlocks2` for NEID IDs above 4095, `AddData` for data values above 15, and the
