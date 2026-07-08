@@ -135,6 +135,12 @@ public final class SchematicConverter {
                     .collect(Collectors.toCollection(ArrayList::new));
         }
 
+        if (schematics.isEmpty()) {
+            System.err.println("WARNING: no .schematic/.schem/.litematic files found in " + inputDirectory.toAbsolutePath());
+            return 0;
+        }
+        System.out.println("Found " + schematics.size() + " schematic(s) in " + inputDirectory.toAbsolutePath());
+
         // Share a single resolution context (and its resolvers) across all files
         ResolutionContext context = new ResolutionContext(mappingsFile, legacySimpleMappings);
 

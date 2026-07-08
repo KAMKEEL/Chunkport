@@ -221,6 +221,17 @@ public class CLI implements Runnable {
             // Create the converter
             Stopwatch stopwatch = Stopwatch.createStarted();
 
+            // Validate input files up front with clear errors
+            if (levelConvert != null && !levelConvert.isFile()) {
+                System.err.println("ERROR: --levelConvert level.dat not found: " + levelConvert.getAbsolutePath());
+                System.err.println("       Provide the level.dat of the target 1.7.10 server (contains the FML block ID registry).");
+                return;
+            }
+            if (simpleBlockMappings != null && !simpleBlockMappings.isFile()) {
+                System.err.println("ERROR: --simpleBlockMappings file not found: " + simpleBlockMappings.getAbsolutePath());
+                return;
+            }
+
             if (generateSimpleMappingsTemplate != null) {
                 try {
                     SimpleMappingsTemplateGenerator.writeTemplate(generateSimpleMappingsTemplate.toPath());
@@ -283,9 +294,14 @@ public class CLI implements Runnable {
                 try {
                     if (levelConvert != null) {
                         LevelConvertMappings.load(levelConvert);
-                        if (debug) {
-                            System.out.println("[DEBUG] Loaded " + LevelConvertMappings.size() + " level.dat mappings");
+                        if (LevelConvertMappings.size() == 0) {
+                            System.err.println("WARNING: no FML block ID mappings found in " + levelConvert.getName()
+                                    + " - is this the level.dat of a Forge server?");
+                        } else {
+                            System.out.println("Loaded " + LevelConvertMappings.size() + " block ID mappings from " + levelConvert.getName());
                         }
+                    } else {
+                        System.out.println("Note: no --levelConvert provided, mod block IDs will resolve using vanilla ID tables only.");
                     }
 
                     MappingsFile loadedMappings = null;
@@ -301,10 +317,8 @@ public class CLI implements Runnable {
                     if (simpleBlockMappings != null) {
                         try {
                             MappingsFile mappingsFile = SimpleMappingsParser.parse(simpleBlockMappings.toPath());
-                            if (debug) {
-                                int count = mappingsFile.toJson().getAsJsonObject().getAsJsonArray("identifiers").size();
-                                System.out.println("[DEBUG] Parsed " + count + " simple mappings");
-                            }
+                            int count = mappingsFile.toJson().getAsJsonObject().getAsJsonArray("identifiers").size();
+                            System.out.println("Parsed " + count + " mapping rules from " + simpleBlockMappings.getName());
                             simpleMappingsProvided = true;
                             if (loadedMappings == null) {
                                 loadedMappings = mappingsFile;
@@ -312,9 +326,11 @@ public class CLI implements Runnable {
                                 loadedMappings = mergeMappings(loadedMappings, mappingsFile);
                             }
                         } catch (Exception e) {
-                            System.err.println("Failed to parse simple block mappings.");
+                            System.err.println("Failed to parse simple block mappings (" + simpleBlockMappings.getName() + "): " + e.getMessage());
                             throw new RuntimeException(e);
                         }
+                    } else {
+                        System.out.println("Note: no --simpleBlockMappings provided, blocks convert using built-in tables only.");
                     }
 
                     boolean useLegacySimpleMappings = legacySimpleMappings || simpleMappingsProvided;
@@ -370,15 +386,16 @@ public class CLI implements Runnable {
                 try {
                     if (levelConvert != null) {
                         LevelConvertMappings.load(levelConvert);
-                        if (debug) {
-                            System.out.println("[DEBUG] Loaded " + LevelConvertMappings.size() + " level.dat mappings");
+                        if (LevelConvertMappings.size() == 0) {
+                            System.err.println("WARNING: no FML block ID mappings found in " + levelConvert.getName()
+                                    + " - is this the level.dat of a Forge server?");
+                        } else {
+                            System.out.println("Loaded " + LevelConvertMappings.size() + " block ID mappings from " + levelConvert.getName());
                         }
                     }
                     MappingsFile mappingsFile = SimpleMappingsParser.parse(simpleBlockMappings.toPath());
-                    if (debug) {
-                        int count = mappingsFile.toJson().getAsJsonObject().getAsJsonArray("identifiers").size();
-                        System.out.println("[DEBUG] Parsed " + count + " simple mappings");
-                    }
+                    int count = mappingsFile.toJson().getAsJsonObject().getAsJsonArray("identifiers").size();
+                    System.out.println("Parsed " + count + " mapping rules from " + simpleBlockMappings.getName());
                     simpleMappingsProvided = true;
                     if (loadedMappings == null) {
                         loadedMappings = mappingsFile;
