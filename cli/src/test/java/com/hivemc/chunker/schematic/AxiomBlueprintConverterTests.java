@@ -216,6 +216,32 @@ class AxiomBlueprintConverterTests {
     }
 
     @Test
+    void readsRealAxiomLowercaseKeys() throws Exception {
+        // Axiom itself writes lowercase palette/data (like 1.18+ chunk NBT) and
+        // uses void_air as the unselected filler - both must be handled
+        CompoundTag blockStates = new CompoundTag();
+        List<CompoundTag> palette = List.of(
+                blockState("minecraft:void_air"),
+                blockState("minecraft:stone"));
+        int[] indices = new int[4096];
+        indices[sectionIndex(3, 2, 1)] = 1;
+        blockStates.put("palette", new ListTag<>(TagType.COMPOUND, new ArrayList<>(palette)));
+        blockStates.put("data", new LongArrayTag(pack(indices, palette.size())));
+
+        CompoundTag section = new CompoundTag();
+        section.put("X", new IntTag(0));
+        section.put("Y", new IntTag(0));
+        section.put("Z", new IntTag(0));
+        section.put("BlockStates", blockStates);
+
+        Path input = writeBlueprint(DV_1_21_4, List.of(section));
+        SchematicData data = SchematicConverter.read(input);
+
+        assertEquals(1, data.getBlockIds()[outputIndex(data, 3, 2, 1)], "stone via lowercase palette/data");
+        assertEquals(0, data.getBlockIds()[outputIndex(data, 0, 0, 0)], "void_air filler becomes air");
+    }
+
+    @Test
     void rejectsWrongMagic() throws Exception {
         Path file = Files.createTempFile("bad", ".bp");
         try (DataOutputStream out = new DataOutputStream(Files.newOutputStream(file))) {

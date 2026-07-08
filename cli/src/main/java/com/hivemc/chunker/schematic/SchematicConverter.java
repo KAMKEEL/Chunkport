@@ -613,7 +613,12 @@ public final class SchematicConverter {
                 continue;
             }
 
-            Tag<?> paletteTag = blockStates.get("Palette");
+            // Axiom itself writes lowercase palette/data (like 1.18+ chunk NBT),
+            // third party writers use the capitalised form - accept both
+            Tag<?> paletteTag = blockStates.get("palette");
+            if (!(paletteTag instanceof ListTag)) {
+                paletteTag = blockStates.get("Palette");
+            }
             if (!(paletteTag instanceof ListTag<?, ?> palette) || palette.size() == 0) {
                 continue;
             }
@@ -645,7 +650,11 @@ public final class SchematicConverter {
             int offsetY = (section.getInt("Y") - minSY) * 16;
             int offsetZ = (section.getInt("Z") - minSZ) * 16;
 
-            LongArrayTag dataTag = blockStates.get("Data") instanceof LongArrayTag longs ? longs : null;
+            Tag<?> dataRaw = blockStates.get("data");
+            if (!(dataRaw instanceof LongArrayTag)) {
+                dataRaw = blockStates.get("Data");
+            }
+            LongArrayTag dataTag = dataRaw instanceof LongArrayTag longs ? longs : null;
             long[] packed = dataTag != null ? dataTag.getValue() : null;
 
             if (paletteSize == 1 || packed == null || packed.length == 0) {
