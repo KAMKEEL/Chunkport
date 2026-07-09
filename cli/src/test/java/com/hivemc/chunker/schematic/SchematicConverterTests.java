@@ -10,9 +10,11 @@ import com.hivemc.chunker.nbt.tags.primitive.IntTag;
 import com.hivemc.chunker.nbt.tags.primitive.ShortTag;
 import com.hivemc.chunker.nbt.tags.TagWithName;
 import com.hivemc.chunker.nbt.io.Reader;
+import com.hivemc.chunker.nbt.io.Writer;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -251,6 +253,29 @@ class SchematicConverterTests {
 
         Path input = Files.createTempFile("spongev3", ".schem");
         Tag.writeGZipJavaNBT(input.toFile(), root);
+
+        SchematicData loaded = SchematicConverter.read(input);
+        assertEquals(1, loaded.getBlockIds().length);
+        assertEquals(1, loaded.getBlockIds()[0]);
+    }
+
+    @Test
+    void readsUncompressedSpongeSchematic() throws Exception {
+        CompoundTag palette = new CompoundTag();
+        palette.put("minecraft:stone", new IntTag(0));
+
+        CompoundTag spongeRoot = new CompoundTag();
+        spongeRoot.put("Width", new ShortTag((short) 1));
+        spongeRoot.put("Height", new ShortTag((short) 1));
+        spongeRoot.put("Length", new ShortTag((short) 1));
+        spongeRoot.put("Palette", palette);
+        spongeRoot.put("PaletteMax", new IntTag(1));
+        spongeRoot.put("BlockData", new ByteArrayTag(new byte[]{0}));
+
+        Path input = Files.createTempFile("sponge-plain", ".schem");
+        try (DataOutputStream outputStream = new DataOutputStream(Files.newOutputStream(input))) {
+            Tag.encodeNamed(Writer.toJavaWriter(outputStream), "", spongeRoot);
+        }
 
         SchematicData loaded = SchematicConverter.read(input);
         assertEquals(1, loaded.getBlockIds().length);

@@ -27,8 +27,10 @@ import com.hivemc.chunker.nbt.tags.primitive.IntTag;
 import com.hivemc.chunker.nbt.tags.primitive.ShortTag;
 import com.hivemc.chunker.nbt.tags.primitive.StringTag;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
+import net.jpountz.lz4.LZ4BlockInputStream;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.ByteArrayInputStream;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
@@ -52,6 +54,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
+import java.util.zip.InflaterInputStream;
 
 /**
  * Minimal converter capable of reading Sponge .schem files (v1/v2/v3), Litematica
@@ -280,17 +283,82 @@ public final class SchematicConverter {
         ByteArrayTag.setMaxDecodeLength(SCHEMATIC_MAX_BYTE_ARRAY_LENGTH);
         IntArrayTag.setMaxDecodeLength(SCHEMATIC_MAX_INT_ARRAY_LENGTH);
         LongArrayTag.setMaxDecodeLength(SCHEMATIC_MAX_LONG_ARRAY_LENGTH);
-        try (InputStream input = Files.newInputStream(path);
-             BufferedInputStream buffered = new BufferedInputStream(input);
-             GZIPInputStream gzip = new GZIPInputStream(buffered);
-             DataInputStream dataInputStream = new DataInputStream(gzip)) {
-            TagWithName<CompoundTag> pair = Tag.decodeNamed(Reader.toJavaReader(dataInputStream), CompoundTag.class);
-            return pair.tag();
+        try {
+            byte[] input = Files.readAllBytes(path);
+
+            ArrayList<Exception> failures = new ArrayList<>(4);
+            CompoundTag root = tryReadRootGZip(input, failures);
+            if (root != null) return root;
+
+            root = tryReadRootUncompressed(input, failures);
+            if (root != null) return root;
+
+            root = tryReadRootZLib(input, failures);
+            if (root != null) return root;
+
+            root = tryReadRootLZ4(input, failures);
+            if (root != null) return root;
+
+            IOException failure = new IOException("Failed to read schematic root as GZIP, uncompressed, ZLIB or LZ4 NBT");
+            failures.forEach(failure::addSuppressed);
+            throw failure;
         } finally {
             ByteArrayTag.resetMaxDecodeLength();
             IntArrayTag.resetMaxDecodeLength();
             LongArrayTag.resetMaxDecodeLength();
         }
+    }
+
+    private static @Nullable CompoundTag tryReadRootGZip(byte[] input, List<Exception> failures) {
+        try (ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(input);
+             BufferedInputStream bufferedInputStream = new BufferedInputStream(byteArrayInputStream);
+             GZIPInputStream gzipInputStream = new GZIPInputStream(bufferedInputStream);
+             DataInputStream readerStream = new DataInputStream(gzipInputStream)) {
+            return decodeRoot(readerStream);
+        } catch (Exception e) {
+            failures.add(e);
+            return null;
+        }
+    }
+
+    private static @Nullable CompoundTag tryReadRootUncompressed(byte[] input, List<Exception> failures) {
+        try (ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(input);
+             BufferedInputStream bufferedInputStream = new BufferedInputStream(byteArrayInputStream);
+             DataInputStream readerStream = new DataInputStream(bufferedInputStream)) {
+            return decodeRoot(readerStream);
+        } catch (Exception e) {
+            failures.add(e);
+            return null;
+        }
+    }
+
+    private static @Nullable CompoundTag tryReadRootZLib(byte[] input, List<Exception> failures) {
+        try (ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(input);
+             InflaterInputStream inflaterInputStream = new InflaterInputStream(byteArrayInputStream);
+             BufferedInputStream bufferedInputStream = new BufferedInputStream(inflaterInputStream);
+             DataInputStream readerStream = new DataInputStream(bufferedInputStream)) {
+            return decodeRoot(readerStream);
+        } catch (Exception e) {
+            failures.add(e);
+            return null;
+        }
+    }
+
+    private static @Nullable CompoundTag tryReadRootLZ4(byte[] input, List<Exception> failures) {
+        try (ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(input);
+             LZ4BlockInputStream lz4InputStream = new LZ4BlockInputStream(byteArrayInputStream);
+             BufferedInputStream bufferedInputStream = new BufferedInputStream(lz4InputStream);
+             DataInputStream readerStream = new DataInputStream(bufferedInputStream)) {
+            return decodeRoot(readerStream);
+        } catch (Exception e) {
+            failures.add(e);
+            return null;
+        }
+    }
+
+    private static @Nullable CompoundTag decodeRoot(DataInputStream dataInputStream) throws IOException {
+        TagWithName<CompoundTag> pair = Tag.decodeNamed(Reader.toJavaReader(dataInputStream), CompoundTag.class);
+        return pair == null ? null : pair.tag();
     }
 
     private static SchematicData readSponge(Path path, CompoundTag root, CompoundTag paletteTag, byte[] blockData, ResolutionContext context) throws IOException {
