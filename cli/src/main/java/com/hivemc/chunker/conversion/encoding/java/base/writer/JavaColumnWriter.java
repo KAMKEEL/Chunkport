@@ -307,6 +307,8 @@ public class JavaColumnWriter implements ColumnWriter {
      * @param columnNBT the output NBT for the column.
      */
     protected void preProcessColumn(ChunkerColumn column, CompoundTag columnNBT) {
+        JavaChunkWriter chunkWriter = createChunkWriter(column);
+
         // Create any block entities / entities which are based on blocks
         for (ChunkerChunk chunk : column.getChunks().values()) {
             resolvers.blockEntityResolver().generateBeforeWriteBlockEntities(column, chunk);
@@ -344,13 +346,10 @@ public class JavaColumnWriter implements ColumnWriter {
         }
 
         // Run any block entity removal logic
-        column.getBlockEntities().removeIf(blockEntity -> shouldRemoveBlockEntityBeforeWrite(column, blockEntity));
+        column.getBlockEntities().removeIf(blockEntity -> shouldRemoveBlockEntityBeforeWrite(column, chunkWriter, blockEntity));
 
         // Run any entity removal logic
-        column.getEntities().removeIf(entity -> resolvers.entityResolver().shouldRemoveBeforeWrite(
-                column,
-                entity
-        ));
+        column.getEntities().removeIf(entity -> shouldRemoveEntityBeforeWrite(column, chunkWriter, entity));
 
         // Check whether an additional chunk needs to be added to prevent Y biome blending
         if (converter.shouldPreventYBiomeBlending() && !column.getChunks().isEmpty()) {
@@ -367,13 +366,37 @@ public class JavaColumnWriter implements ColumnWriter {
     }
 
     /**
+     * Check whether an entity should be removed before the data is written.
+     *
+     * @param column      the column writing the entity.
+     * @param chunkWriter the chunk writer for the target format.
+     * @param entity      the entity.
+     * @return true if it should be removed.
+     */
+    protected boolean shouldRemoveEntityBeforeWrite(ChunkerColumn column, JavaChunkWriter chunkWriter, Entity entity) {
+        if (!isBlockYSupported(chunkWriter, (int) Math.floor(entity.getPositionY()))) {
+            return true;
+        }
+
+        return resolvers.entityResolver().shouldRemoveBeforeWrite(
+                column,
+                entity
+        );
+    }
+
+    /**
      * Check whether a block entity should be removed before the data is written.
      *
      * @param column      the column writing the block entity.
+     * @param chunkWriter the chunk writer for the target format.
      * @param blockEntity the block entity.
      * @return true if it should be removed.
      */
-    protected boolean shouldRemoveBlockEntityBeforeWrite(ChunkerColumn column, BlockEntity blockEntity) {
+    protected boolean shouldRemoveBlockEntityBeforeWrite(ChunkerColumn column, JavaChunkWriter chunkWriter, BlockEntity blockEntity) {
+        if (!isBlockYSupported(chunkWriter, blockEntity.getY())) {
+            return true;
+        }
+
         // Check the block entity doesn't resolve to air
         ChunkerBlockIdentifier blockIdentifier = column.getBlock(blockEntity.getX(), blockEntity.getY(), blockEntity.getZ());
         if (blockIdentifier.isAir())
@@ -392,6 +415,20 @@ public class JavaColumnWriter implements ColumnWriter {
                 blockEntity.getZ(),
                 blockEntity
         );
+    }
+
+    /**
+     * Check whether a block Y position can be represented by the target chunk writer.
+     *
+     * @param chunkWriter the chunk writer for the target format.
+     * @param blockY      the absolute block Y position.
+     * @return true if the block position is supported by the target format.
+     */
+    protected boolean isBlockYSupported(JavaChunkWriter chunkWriter, int blockY) {
+        int chunkY = Math.floorDiv(blockY, 16);
+        return chunkY >= Byte.MIN_VALUE
+                && chunkY <= Byte.MAX_VALUE
+                && chunkWriter.isChunkHeightSupported((byte) chunkY);
     }
 
     /**
