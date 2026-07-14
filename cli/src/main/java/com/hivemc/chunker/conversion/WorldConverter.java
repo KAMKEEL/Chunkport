@@ -75,6 +75,8 @@ public class WorldConverter implements Converter {
     @Nullable
     private JsonObject changedSettings;
     @Nullable
+    private JsonObject rawLevelDataOverrides;
+    @Nullable
     private List<ChunkerMap> maps;
     @Nullable
     private MappingsFileResolvers blockMappings;
@@ -620,6 +622,27 @@ public class WorldConverter implements Converter {
      */
     public void setChangedSettings(@Nullable JsonObject changedSettings) {
         this.changedSettings = changedSettings;
+    }
+
+    /**
+     * Get raw level.dat "Data" overrides which are written verbatim after the standard settings.
+     * These allow arbitrary (including modded) keys such as {@code dimension} or {@code generatorName}
+     * that aren't part of the known {@link ChunkerLevelSettings} fields.
+     *
+     * @return the raw overrides as a key-value object, otherwise null if none.
+     */
+    @Nullable
+    public JsonObject getRawLevelDataOverrides() {
+        return rawLevelDataOverrides;
+    }
+
+    /**
+     * Set raw level.dat "Data" overrides which are written verbatim after the standard settings.
+     *
+     * @param rawLevelDataOverrides the raw overrides, or null for none.
+     */
+    public void setRawLevelDataOverrides(@Nullable JsonObject rawLevelDataOverrides) {
+        this.rawLevelDataOverrides = rawLevelDataOverrides;
     }
 
     /**

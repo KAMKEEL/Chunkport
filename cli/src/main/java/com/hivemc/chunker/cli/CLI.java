@@ -2,6 +2,7 @@ package com.hivemc.chunker.cli;
 
 import com.google.common.base.Stopwatch;
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.reflect.TypeToken;
 import com.hivemc.chunker.cli.messenger.Messenger;
@@ -11,6 +12,7 @@ import com.hivemc.chunker.conversion.encoding.EncodingType;
 import com.hivemc.chunker.conversion.encoding.base.Version;
 import com.hivemc.chunker.conversion.encoding.base.reader.LevelReader;
 import com.hivemc.chunker.conversion.encoding.base.writer.LevelWriter;
+import com.hivemc.chunker.conversion.intermediate.level.ChunkerLevelSettings;
 import com.hivemc.chunker.conversion.intermediate.world.Dimension;
 import com.hivemc.chunker.mapping.MappingsFile;
 import com.hivemc.chunker.mapping.resolver.MappingsFileResolvers;
@@ -30,8 +32,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.MessageFormat;
 import java.time.Duration;
+import java.util.EnumMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -195,6 +200,22 @@ public class CLI implements Runnable {
         }
 
         return MappingsFile.load(baseJson);
+    }
+
+    /**
+     * Parse a JSON array of dimension names (OVERWORLD/NETHER/THE_END) into an identity mapping where
+     * each listed dimension maps to itself. Dimensions not present in the returned map are dropped.
+     *
+     * @param array the JSON array of dimension names.
+     * @return the identity dimension mapping for the listed dimensions.
+     */
+    private static Map<Dimension, Dimension> parseDimensionList(JsonArray array) {
+        Map<Dimension, Dimension> mapping = new EnumMap<>(Dimension.class);
+        for (JsonElement element : array) {
+            Dimension dimension = Dimension.valueOf(element.getAsString().trim().toUpperCase(Locale.ROOT));
+            mapping.put(dimension, dimension);
+        }
+        return mapping;
     }
 
     /**
@@ -424,9 +445,54 @@ public class CLI implements Runnable {
                     throw new RuntimeException(e);
                 }
             }
+            Map<Dimension, Dimension> dimensionMappingFromSettings = null;
             if (worldSettings != null) {
                 try {
-                    worldConverter.setChangedSettings(GSON.fromJson(worldSettings.getJSONObjectString(), JsonObject.class));
+                    JsonObject parsedWorldSettings = GSON.fromJson(worldSettings.getJSONObjectString(), JsonObject.class);
+
+                    // Split the settings into three groups:
+                    //  - known ChunkerLevelSettings fields (typed, e.g. MapFeatures, keepinventory)
+                    //  - the keepDimensions/dropDimensions convenience keys (handled below)
+                    //  - everything else -> raw level.dat "Data" overrides (arbitrary/modded keys such
+                    //    as dimension, generatorName, generatorOptions)
+                    Set<String> knownFields = new ChunkerLevelSettings().toJSON().keySet();
+                    JsonObject knownSettings = new JsonObject();
+                    JsonObject rawOverrides = new JsonObject();
+                    for (Map.Entry<String, JsonElement> entry : parsedWorldSettings.entrySet()) {
+                        String key = entry.getKey();
+                        if (key.startsWith("_")) {
+                            continue; // Convention for JSON comments (e.g. "_comment")
+                        }
+                        if (key.equals("keepDimensions") || key.equals("dropDimensions")) {
+                            continue; // Handled below
+                        }
+                        if (knownFields.contains(key)) {
+                            knownSettings.add(key, entry.getValue());
+                        } else {
+                            rawOverrides.add(key, entry.getValue());
+                        }
+                    }
+
+                    if (!knownSettings.isEmpty()) {
+                        worldConverter.setChangedSettings(knownSettings);
+                    }
+                    if (!rawOverrides.isEmpty()) {
+                        worldConverter.setRawLevelDataOverrides(rawOverrides);
+                    }
+
+                    // Dimension keep/drop convenience keys (a dimension not kept is dropped from the output).
+                    if (parsedWorldSettings.has("keepDimensions")) {
+                        dimensionMappingFromSettings = parseDimensionList(parsedWorldSettings.getAsJsonArray("keepDimensions"));
+                    } else if (parsedWorldSettings.has("dropDimensions")) {
+                        Map<Dimension, Dimension> kept = new EnumMap<>(Dimension.class);
+                        for (Dimension dimension : Dimension.values()) {
+                            kept.put(dimension, dimension);
+                        }
+                        for (JsonElement dropped : parsedWorldSettings.getAsJsonArray("dropDimensions")) {
+                            kept.remove(Dimension.valueOf(dropped.getAsString().trim().toUpperCase(Locale.ROOT)));
+                        }
+                        dimensionMappingFromSettings = kept;
+                    }
                 } catch (Exception e) {
                     System.err.println("Failed to parse world settings.");
                     throw new RuntimeException(e);
@@ -481,6 +547,10 @@ public class CLI implements Runnable {
                     System.err.println("Failed to parse dimension mappings.");
                     throw new RuntimeException(e);
                 }
+            } else if (dimensionMappingFromSettings != null) {
+                // Fall back to the keepDimensions/dropDimensions from world settings when no explicit
+                // dimension mappings were provided.
+                worldConverter.setDimensionMapping(dimensionMappingFromSettings);
             }
 
             // Apply converter settings if they're present and parse

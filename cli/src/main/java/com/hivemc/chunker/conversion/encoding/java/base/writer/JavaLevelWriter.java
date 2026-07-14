@@ -297,6 +297,18 @@ public class JavaLevelWriter implements LevelWriter, JavaReaderWriter {
         // Write extra settings
         writeExtraLevelSettings(data);
 
+        // Apply raw level.dat "Data" overrides last so they win over the standard settings.
+        // This allows arbitrary (including modded) keys such as dimension / generatorName.
+        if (converter instanceof WorldConverter worldConverter && worldConverter.getRawLevelDataOverrides() != null) {
+            applyRawLevelDataOverrides(data, worldConverter.getRawLevelDataOverrides());
+        }
+
+        // Strip keys that don't exist in the target version so legacy (e.g. 1.7.10) loaders and
+        // Forge/hybrid servers accept the level.dat instead of rejecting it and regenerating the
+        // world metadata (which resets settings and reassigns the dimension). Runs after the raw
+        // overrides so the generator fix below sees the final generatorName.
+        cleanLegacyLevelData(data);
+
         // Write the level.dat
         CompoundTag root = new CompoundTag();
         root.put("Data", data);
@@ -472,6 +484,91 @@ public class JavaLevelWriter implements LevelWriter, JavaReaderWriter {
                 // Fall back to spectator
                 data.put("GameType", 3);
             }
+        }
+    }
+
+    /**
+     * Write raw key-value overrides directly into the level.dat "Data" compound. The NBT tag type is
+     * inferred from the JSON value: booleans become bytes (0/1), whole numbers become ints (or longs when
+     * they don't fit in an int), other numbers become doubles, and everything else becomes a string.
+     *
+     * @param data      the "Data" compound to write into.
+     * @param overrides the key-value overrides to apply.
+     */
+    protected void applyRawLevelDataOverrides(CompoundTag data, com.google.gson.JsonObject overrides) {
+        for (Map.Entry<String, com.google.gson.JsonElement> entry : overrides.entrySet()) {
+            String key = entry.getKey();
+            com.google.gson.JsonElement element = entry.getValue();
+            if (!element.isJsonPrimitive()) {
+                converter.logNonFatalException(new Exception("Ignoring level.dat override '" + key + "': only string/number/boolean values are supported."));
+                continue;
+            }
+
+            com.google.gson.JsonPrimitive primitive = element.getAsJsonPrimitive();
+            if (primitive.isBoolean()) {
+                data.put(key, (byte) (primitive.getAsBoolean() ? 1 : 0));
+            } else if (primitive.isNumber()) {
+                double d = primitive.getAsDouble();
+                if (d == Math.rint(d) && !Double.isInfinite(d)) {
+                    long l = primitive.getAsLong();
+                    if (l >= Integer.MIN_VALUE && l <= Integer.MAX_VALUE) {
+                        data.put(key, (int) l);
+                    } else {
+                        data.put(key, l);
+                    }
+                } else {
+                    data.put(key, d);
+                }
+            } else {
+                data.put(key, primitive.getAsString());
+            }
+        }
+    }
+
+    /**
+     * Remove level.dat "Data" keys that did not exist in the target Minecraft version, and fix the
+     * generator version so an older world type resolves correctly.
+     * <p>
+     * Chunker always assembles a modern level.dat layout. When writing a legacy target (notably
+     * 1.7.10 for modded / Forge hybrid servers) the future keys cause the loader to treat the file as
+     * malformed and regenerate the world metadata, which resets settings and reassigns the dimension.
+     * Stripping them produces a level.dat that matches what those versions write themselves.
+     *
+     * @param data the assembled "Data" compound to clean in place.
+     */
+    protected void cleanLegacyLevelData(CompoundTag data) {
+        // Keys introduced in 1.9 - the loader ignores these but strict tooling can choke on them.
+        if (version.isLessThan(1, 9, 0)) {
+            data.remove("Version");
+            data.remove("DataVersion");
+        }
+
+        // World border, difficulty lock, clear-weather timer and the per-world Difficulty tag arrived
+        // in 1.8. The single-player Player compound holds modern-format items a 1.7.10 loader can't
+        // parse, so it's dropped too (server worlds never store it in level.dat).
+        if (version.isLessThan(1, 8, 0)) {
+            data.remove("BorderCenterX");
+            data.remove("BorderCenterZ");
+            data.remove("BorderDamagePerBlock");
+            data.remove("BorderSafeZone");
+            data.remove("BorderSize");
+            data.remove("BorderSizeLerpTarget");
+            data.remove("BorderSizeLerpTime");
+            data.remove("BorderWarningBlocks");
+            data.remove("BorderWarningTime");
+            data.remove("DifficultyLocked");
+            data.remove("Difficulty");
+            data.remove("clearWeatherTime");
+            data.remove("Player");
+        }
+
+        // Legacy generators (pre-1.13, before generation moved to WorldGenSettings) key off
+        // generatorName + generatorVersion. The "default" world type expects generatorVersion 1; with
+        // 0 the game falls back to the "default_1_1" (Old) generator. Fix it without clobbering an
+        // explicit non-zero override.
+        if (version.isLessThan(1, 13, 0) && "default".equals(data.getString("generatorName", null))
+                && data.getInt("generatorVersion", 0) == 0) {
+            data.put("generatorVersion", 1);
         }
     }
 
